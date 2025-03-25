@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude3 動画解析ツール</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Claude3 動画解析ツール</h1>
+            <p>MP4形式の動画をアップロードして、Claude AIで解析できます</p>
+        </header>
+        
+        <main>
+            <div class="upload-section">
+                <div class="drop-zone" id="drop-zone">
+                    <div class="drop-zone-prompt">
+                        <div class="icon">📁</div>
+                        <p>動画をドラッグ&ドロップするか、クリックして選択</p>
+                        <p class="file-info">MP4形式のファイルのみ</p>
+                    </div>
+                    <input type="file" id="file-input" accept="video/mp4" class="drop-zone-input">
+                </div>
+                
+                <div class="selected-file-info hidden" id="file-info">
+                    <p>選択したファイル: <span id="filename">ファイル名</span></p>
+                    <button class="outline-button" id="change-file">ファイルを変更</button>
+                </div>
+            </div>
+            
+            <div class="prompt-section">
+                <h2>解析プロンプト</h2>
+                <textarea id="prompt" rows="5" placeholder="動画解析のためのプロンプトを入力してください">{{ default_prompt }}</textarea>
+            </div>
+            
+            <div class="action-section">
+                <button id="analyze-button" class="primary-button" disabled>解析開始</button>
+                <div class="loading-indicator hidden" id="loading">
+                    <span class="spinner"></span>
+                    <span>解析中...</span>
+                </div>
+            </div>
+            
+            <div class="results-section hidden" id="results-section">
+                <h2>解析結果</h2>
+                <div class="results-container" id="results-content"></div>
+                <div class="action-buttons">
+                    <button id="copy-button" class="outline-button">結果をコピー</button>
+                    <button id="new-analysis" class="secondary-button">新しい解析</button>
+                </div>
+            </div>
+        </main>
+        
+        <footer>
+            <p>© 2025 Claude3 Video Analyzer - Powered by Anthropic Claude-3</p>
+        </footer>
+    </div>
+    
+    <script src="/static/js/main.js"></script>
+</body>
+</html>

@@ -1,70 +1,142 @@
-import anthropic
-import base64
-import cv2
-from dotenv import load_dotenv
 import os
+import time
+import tempfile
+import json
+from flask import Flask, request, jsonify, render_template, Response, send_from_directory
+from flask_cors import CORS
+from src.claude3_video_analyzer import VideoAnalyzer
 
-# APIキーの取得
-api_key = os.getenv("ANTHROPIC_API_KEY")
+app = Flask(__name__, 
+            static_folder='static',
+            template_folder='templates')
+CORS(app)
 
-if api_key is None:
-    # 環境変数にAPIキーがない場合は、.envファイルから読み取る
-    load_dotenv()
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+# アップロードされた動画を保存するディレクトリ
+UPLOAD_FOLDER = os.path.join(os.getcwd(), 'resources')
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
-if api_key is None:
-    # 環境変数にも.envファイルにもAPIキーがない場合は、エラーメッセージを表示して終了する
-    print("Error: ANTHROPIC_API_KEY not found in environment variables or .env file.")
-    exit(1)
+analyzer = VideoAnalyzer()
 
-# Anthropicクライアントの初期化
-client = anthropic.Anthropic(api_key=api_key)
+@app.route('/')
+def index():
+    """メインページを表示"""
+    return render_template('index.html', default_prompt=analyzer.default_prompt)
 
-def get_frames_from_video(file_path, max_images=20):
-    video = cv2.VideoCapture(file_path)
-    base64_frames = []
-    while video.isOpened():
-        success, frame = video.read()
-        if not success:
-            break
-        _, buffer = cv2.imencode(".jpg", frame)
-        base64_frame = base64.b64encode(buffer).decode("utf-8")
-        base64_frames.append(base64_frame)
-    video.release()
+@app.route('/api/analyze', methods=['POST'])
+def analyze_video():
+    """動画を解析するAPI"""
+    if 'video' not in request.files:
+        return jsonify({'error': 'ビデオファイルがアップロードされていません'}), 400
+        
+    video_file = request.files['video']
+    if video_file.filename == '':
+        return jsonify({'error': 'ファイルが選択されていません'}), 400
+        
+    prompt = request.form.get('prompt', analyzer.default_prompt)
+    
+    # 一時ファイルに保存
+    _, temp_path = tempfile.mkstemp(suffix='.mp4')
+    video_file.save(temp_path)
+    
+    try:
+        # フレームの取得
+        base64_frames, _ = analyzer.get_frames_from_video(temp_path)
+        
+        def generate():
+            """ストリーミングレスポンスを生成"""
+            try:
+                # プログレス通知
+                progress_text = '動画フレームの抽出が完了しました。解析を開始します...' + '\n'
+                yield f"data: {json.dumps({'text': progress_text})}\n\n"
+                
+                # 予め取得したフレームを解析（非ストリーミング）
+                if not analyzer.use_bedrock:
+                    # Claude APIにリクエストを送信（Anthropicクライアント）
+                    with analyzer.client.messages.stream(
+                        model=analyzer.model,
+                        max_tokens=1024,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    *map(lambda x: {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": x}}, base64_frames),
+                                    {
+                                        "type": "text",
+                                        "text": prompt
+                                    }
+                                ],
+                            }
+                        ],
+                    ) as stream:
+                        for text in stream.text_stream:
+                            yield f"data: {json.dumps({'text': text})}\n\n"
+                else:
+                    # Bedrock APIにリクエストを送信
+                    body = json.dumps({
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 1024,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    *map(lambda x: {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": x}}, base64_frames),
+                                    {
+                                        "type": "text",
+                                        "text": prompt
+                                    }
+                                ]
+                            }
+                        ]
+                    })
+                    
+                    # Bedrockにストリーミングリクエストを送信
+                    response = analyzer.bedrock_runtime.invoke_model_with_response_stream(
+                        modelId=analyzer.model,
+                        body=body
+                    )
+                    
+                    # レスポンスストリームを処理
+                    for event in response.get("body"):
+                        if "chunk" in event:
+                            chunk = json.loads(event["chunk"]["bytes"])
+                            if "type" in chunk and chunk["type"] == "content_block_delta" and "delta" in chunk:
+                                text = chunk["delta"].get("text", "")
+                                if text:
+                                    yield f"data: {json.dumps({'text': text})}\n\n"
+                
+                # 完了通知
+                yield f"data: {json.dumps({'complete': True})}\n\n"
+            
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            finally:
+                # 一時ファイルを削除
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+        
+        return Response(generate(), mimetype='text/event-stream')
+        
+    except Exception as e:
+        # 一時ファイルを削除
+        try:
+            os.remove(temp_path)
+        except:
+            pass
+        return jsonify({'error': str(e)}), 500
 
-    # 選択する画像の数を制限する
-    selected_frames = base64_frames[0::len(base64_frames)//max_images][:max_images]
-
-    return selected_frames, buffer
-
-def get_text_from_video(file_path, prompt, model, max_images=20):
-    # ビデオからフレームを取得し、それらをbase64にエンコードする
-    print(f"{file_path}:\nフレーム取得開始")
-    base64_frames, buffer = get_frames_from_video(file_path, max_images)
-    print("フレーム取得完了")
-    # Claude APIにリクエストを送信
-    with client.messages.stream(
-        model=model,  # モデル指定
-        max_tokens=1024,  # 最大トークン数
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    *map(lambda x: {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": x}}, base64_frames),
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ],
-            }
-        ],
-    ) as stream:
-        for text in stream.text_stream: 
-            print(text, end="", flush=True)
+@app.route('/static/<path:path>')
+def serve_static(path):
+    """静的ファイルを提供"""
+    return send_from_directory('static', path)
 
 if __name__ == "__main__":
-    video_file_path = os.path.join("resources", "video_name.mp4")  # ビデオファイルのパスを指定
-    prompt = "これは動画のフレーム画像です。動画の最初から最後の流れ、動作を微分して日本語で解説してください。"  # プロンプトを指定
-    model = "claude-3-sonnet-20240229"  # モデルを指定 "claude-3-opus-20240229" or "claude-3-sonnet-20240229"
-
-    get_text_from_video(video_file_path, prompt, model)
+    # クエリ文字列で直接実行をサポート
+    print("Claude3 Video Analyzer Webサーバーを起動します...")
+    print(f"使用モデル: {analyzer.model}")
+    print(f"使用モード: {'Bedrock' if analyzer.use_bedrock else 'Anthropic Direct'}")
+    print("http://localhost:5000/ にアクセスしてください")
+    
+    app.run(debug=True, host='0.0.0.0', port=5000)
