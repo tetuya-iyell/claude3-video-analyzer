@@ -127,9 +127,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             const data = JSON.parse(dataLine);
                             
                             if (data.text) {
-                                // テキストの追加
+                                // テキストの追加（白空白とテキストを保持）
                                 const textNode = document.createTextNode(data.text);
                                 resultsContent.appendChild(textNode);
+                                
+                                // スクロール位置を最下部に調整
+                                resultsContent.scrollTop = resultsContent.scrollHeight;
                             }
                             
                             if (data.error) {

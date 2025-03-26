@@ -47,7 +47,7 @@ def analyze_video():
             """ストリーミングレスポンスを生成"""
             try:
                 # プログレス通知
-                progress_text = '動画フレームの抽出が完了しました。解析を開始します...' + '\n'
+                progress_text = '動画フレームの抽出が完了しました。解析を開始します...\n\n'
                 yield f"data: {json.dumps({'text': progress_text})}\n\n"
                 
                 # 予め取得したフレームを解析（非ストリーミング）

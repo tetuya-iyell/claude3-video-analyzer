@@ -232,6 +232,23 @@ textarea:focus {
     padding: 1.5rem;
     margin-bottom: 1rem;
     line-height: 1.8;
+    white-space: pre-wrap;
+    font-size: 1.05rem;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.results-container p {
+    margin-bottom: 1rem;
+}
+
+.results-container h3, 
+.results-container h4 {
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    color: var(--primary-color);
 }
 
 .action-buttons {
