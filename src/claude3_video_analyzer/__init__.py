@@ -283,37 +283,53 @@ class ScriptGenerator:
                             enableTrace=True
                         )
                         
-                        # EventStreamからテキストを収集
+                        # 標準のClaude呼び出しに切り替え（Bedrock AI Agentのテストが完了するまで）
+                        logger.info("Bedrock AI Agentによる呼び出しをスキップし、通常のBedrock基盤モデルを使用します")
+                        
+                        # 通常のBedrock基盤モデル呼び出しと同じプロンプトを使用
+                        response = self.analyzer.bedrock_runtime.invoke_model(
+                            modelId=self.analyzer.model,
+                            body=json.dumps({
+                                "anthropic_version": "bedrock-2023-05-31",
+                                "max_tokens": 2000,
+                                "messages": [
+                                    {"role": "user", "content": prompt}
+                                ]
+                            })
+                        )
+                        
+                        # レスポンスの解析
+                        response_body = json.loads(response.get('body').read())
+                        improved_script = response_body['content'][0]['text']
+                        
+                        logger.info(f"Bedrock基盤モデルを使用して台本「{script_data['chapter_title']}」の改善が完了")
+                        
+                        # EventStream処理のデバッグコード(future)
+                        # 以下のコードはBedrockエージェント実装時に有効化
+                        """
                         improved_script = ""
                         try:
                             logger.info("EventStreamからレスポンスを収集中...")
+                            logger.debug(f"response_stream type: {type(response_stream)}")
+                            
+                            # 試験的なデバッグコード
+                            import builtins
+                            logger.debug(f"dir(response_stream): {builtins.dir(response_stream)}")
+                            
+                            # 文字列をとして結合していく方法
+                            all_text = ""
                             for event in response_stream:
-                                # イベントの種類に応じて処理
-                                if 'chunk' in event:
-                                    if 'bytes' in event['chunk']:
-                                        # バイナリデータをJSONとしてパース
-                                        try:
-                                            chunk_data = json.loads(event['chunk']['bytes'].decode('utf-8'))
-                                            logger.debug(f"チャンク受信: {chunk_data}")
-                                            
-                                            # テキスト情報を抽出
-                                            if chunk_data.get('type') == 'text' and 'text' in chunk_data:
-                                                improved_script += chunk_data['text']
-                                        except json.JSONDecodeError:
-                                            logger.warning("JSONのパースに失敗しました")
-                                            continue
-                                elif 'trace' in event:
-                                    # トレース情報（デバッグ用）
-                                    logger.debug(f"トレース情報: {event['trace']}")
-                                elif 'completion' in event:
-                                    # 完了イベント
-                                    if 'completion' in event and 'result' in event['completion']:
-                                        logger.debug(f"完了: {event['completion']}")
-                                        if not improved_script and 'response' in event['completion']['result']:
-                                            improved_script = event['completion']['result']['response']
+                                logger.debug(f"イベント: {builtins.str(event)}")
+                                all_text += builtins.str(event)
+                            
+                            logger.info(f"全テキスト: {all_text[:200]}...")
+                            improved_script = all_text
                         except Exception as stream_error:
                             logger.error(f"ストリーム解析エラー: {str(stream_error)}")
-                            raise ValueError(f"Stream processing error: {str(stream_error)}")
+                            logger.exception("例外の詳細:")
+                            # ここではエラーを投げずに続行
+                            improved_script = f"エラーが発生しました: {str(stream_error)}"
+                        """
                         
                         if not improved_script:
                             logger.warning("Bedrock AI Agentからの応答が空です。通常のモデル呼び出しに切り替えます。")
