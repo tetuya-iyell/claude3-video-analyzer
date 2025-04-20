@@ -3,6 +3,7 @@ import time
 import tempfile
 import json
 import logging
+import uuid
 from flask import (
     Flask,
     request,
@@ -23,7 +24,21 @@ logging.basicConfig(
 )
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+# セッションの設定
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+
+# Note: flask-sessionライブラリを使用しない場合の代替設定
+# 代わりに標準のFlaskセッションを使用するが、大きなセッションデータを扱うために
+# データをファイルシステムに保存する独自の仕組みを実装する
+app.config['SESSION_TYPE'] = 'cookie'      # クッキーベースのセッション(デフォルト)
+app.config['SESSION_PERMANENT'] = True     # 永続的セッション
+app.config['SESSION_USE_SIGNER'] = True    # セッションクッキーの署名
+
+# セッションデータ保存用のディレクトリ
+SESSION_DATA_DIR = os.path.join(os.getcwd(), "flask_sessions")
+if not os.path.exists(SESSION_DATA_DIR):
+    os.makedirs(SESSION_DATA_DIR)
+
 CORS(app)
 
 # Goose API Blueprintを登録
@@ -358,8 +373,19 @@ def bedrock_analyze_chapters():
         # 章の抽出
         chapters = script_generator.extract_chapters(analysis_text)
         
-        # セッションに保存
-        session['chapters'] = chapters
+        # セッションIDを生成（なければ）
+        if 'session_id' not in session:
+            session['session_id'] = str(uuid.uuid4())
+        
+        session_id = session['session_id']
+        
+        # ファイルにチャプターデータを保存
+        chapters_file = os.path.join(SESSION_DATA_DIR, f"{session_id}_chapters.json")
+        with open(chapters_file, 'w', encoding='utf-8') as f:
+            json.dump(chapters, f, ensure_ascii=False)
+        
+        # セッションには参照のみ保存
+        session['chapters_file'] = chapters_file
         
         return jsonify({
             "success": True,
@@ -380,12 +406,30 @@ def bedrock_generate_script():
     if not data or 'chapter_index' not in data:
         return jsonify({"error": "章のインデックスが指定されていません"}), 400
         
-    chapter_index = data['chapter_index']
+    chapter_index = int(data['chapter_index'])
+    
+    # セッションIDの確認
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
+    session_id = session['session_id']
     
     # 章情報の取得
     chapters = data.get('chapters')
     if not chapters:
-        chapters = session.get('chapters')
+        # セッションから章情報のファイルパスを取得
+        chapters_file = session.get('chapters_file')
+        if chapters_file and os.path.exists(chapters_file):
+            with open(chapters_file, 'r', encoding='utf-8') as f:
+                chapters = json.load(f)
+        else:
+            return jsonify({"error": "章情報が見つかりません"}), 404
+    else:
+        # クライアントから送信された章情報をファイルに保存
+        chapters_file = os.path.join(SESSION_DATA_DIR, f"{session_id}_chapters.json")
+        with open(chapters_file, 'w', encoding='utf-8') as f:
+            json.dump(chapters, f, ensure_ascii=False)
+        session['chapters_file'] = chapters_file
+        logging.info(f"クライアントから送信された章情報をファイルに保存しました: {len(chapters)}章")
     
     if not chapters or chapter_index >= len(chapters):
         return jsonify({"error": "指定された章が見つかりません"}), 404
@@ -396,15 +440,32 @@ def bedrock_generate_script():
         # 台本生成
         script_data = script_generator.generate_script_for_chapter(chapter)
         
-        # 台本を保存（セッションストアから取得）
-        scripts = session.get('scripts', [])
-        if chapter_index >= len(scripts):
-            # 新しい章の台本を追加
-            scripts.append(script_data)
-        else:
-            # 既存の章の台本を更新
-            scripts[chapter_index] = script_data
-        session['scripts'] = scripts
+        # スクリプト情報のファイル
+        scripts_file = os.path.join(SESSION_DATA_DIR, f"{session_id}_scripts.json")
+        
+        # 既存のスクリプトを読み込む
+        scripts = []
+        if os.path.exists(scripts_file):
+            with open(scripts_file, 'r', encoding='utf-8') as f:
+                scripts = json.load(f)
+        
+        logging.info(f"現在のスクリプト数: {len(scripts)}")
+        
+        # スクリプト配列を必要に応じて拡張
+        while len(scripts) <= chapter_index:
+            scripts.append(None)
+            
+        # 台本を保存
+        scripts[chapter_index] = script_data
+        
+        # ファイルに保存
+        with open(scripts_file, 'w', encoding='utf-8') as f:
+            json.dump(scripts, f, ensure_ascii=False)
+            
+        # セッションに参照を保存
+        session['scripts_file'] = scripts_file
+        
+        logging.info(f"台本をファイルに保存しました。chapter_index: {chapter_index}, スクリプト総数: {len(scripts)}")
         
         return jsonify({
             "success": True,
@@ -473,14 +534,37 @@ def bedrock_submit_feedback():
     if not data or 'chapter_index' not in data or 'feedback' not in data or 'is_approved' not in data:
         return jsonify({"error": "必須パラメータが不足しています"}), 400
     
-    chapter_index = data['chapter_index']
+    chapter_index = int(data['chapter_index'])  # 明示的に整数型に変換
     feedback_text = data['feedback']
     is_approved = data['is_approved']
     
-    # 台本の取得
-    scripts = session.get('scripts', [])
-    if chapter_index >= len(scripts):
-        return jsonify({"error": "指定された章の台本が見つかりません"}), 404
+    logging.info(f"フィードバック受信: chapter_index={chapter_index}, is_approved={is_approved}, feedback長さ={len(feedback_text)}")
+    
+    # セッションIDの確認
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
+    session_id = session['session_id']
+    
+    # スクリプトデータをファイルから取得
+    scripts_file = session.get('scripts_file')
+    if not scripts_file or not os.path.exists(scripts_file):
+        logging.error("スクリプトファイルが見つかりません")
+        return jsonify({"error": "スクリプトデータが見つかりません"}), 404
+    
+    # スクリプトデータを読み込む
+    with open(scripts_file, 'r', encoding='utf-8') as f:
+        scripts = json.load(f)
+    
+    logging.info(f"ファイルから読み込んだスクリプト数: {len(scripts)}")
+    
+    # スクリプト配列を必要に応じて拡張
+    while len(scripts) <= chapter_index:
+        scripts.append(None)
+        logging.info(f"スクリプト配列を拡張: 新しいサイズ={len(scripts)}")
+    
+    # スクリプトデータが存在しない場合のエラーチェック
+    if scripts[chapter_index] is None:
+        return jsonify({"error": f"章 {chapter_index} の台本データが見つかりません"}), 404
     
     script_data = scripts[chapter_index]
     
@@ -489,20 +573,30 @@ def bedrock_submit_feedback():
         if is_approved:
             # 承認の場合
             script_data['status'] = "approved"
+            logging.info(f"台本を承認しました: chapter_index={chapter_index}")
         else:
             # フィードバックの場合
             script_data['status'] = "rejected"
             if 'feedback' not in script_data:
                 script_data['feedback'] = []
             script_data['feedback'].append(feedback_text)
+            logging.info(f"フィードバックを追加: chapter_index={chapter_index}, フィードバック数={len(script_data['feedback'])}")
             
             # フィードバックに基づいて台本を改善
             improved_script_data = script_generator.improve_script(script_data, feedback_text)
+            
+            # 明示的に improved_script キーを設定
             script_data['improved_script'] = improved_script_data['script_content']
+            logging.info(f"台本の改善が完了しました。improved_script キーを設定しました。長さ={len(script_data['improved_script'])}")
         
         # 変更を保存
         scripts[chapter_index] = script_data
-        session['scripts'] = scripts
+        
+        # ファイルに保存
+        with open(scripts_file, 'w', encoding='utf-8') as f:
+            json.dump(scripts, f, ensure_ascii=False)
+        
+        logging.info(f"台本をファイルに保存: chapter_index={chapter_index}, スクリプト総数={len(scripts)}")
         
         return jsonify({
             "success": True,
@@ -525,26 +619,70 @@ def bedrock_apply_improvement():
     if not data or 'chapter_index' not in data:
         return jsonify({"error": "章のインデックスが指定されていません"}), 400
         
-    chapter_index = data['chapter_index']
+    chapter_index = int(data['chapter_index'])  # 明示的に整数型に変換
     
-    # 台本の取得
-    scripts = session.get('scripts', [])
-    if chapter_index >= len(scripts):
+    # セッションIDの確認
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
+    session_id = session['session_id']
+    
+    # スクリプトデータをファイルから取得
+    scripts_file = session.get('scripts_file')
+    if not scripts_file or not os.path.exists(scripts_file):
+        logging.error("スクリプトファイルが見つかりません")
+        return jsonify({"error": "スクリプトデータが見つかりません"}), 404
+    
+    # スクリプトデータを読み込む
+    with open(scripts_file, 'r', encoding='utf-8') as f:
+        scripts = json.load(f)
+    
+    logging.info(f"apply_improvement: ファイルから読み込んだスクリプト数: {len(scripts)}")
+    
+    if chapter_index >= len(scripts) or scripts[chapter_index] is None:
+        logging.error(f"指定された章の台本が見つかりません。chapter_index: {chapter_index}, スクリプト数: {len(scripts)}")
         return jsonify({"error": "指定された章の台本が見つかりません"}), 404
     
     script_data = scripts[chapter_index]
-    if 'improved_script' not in script_data:
-        return jsonify({"error": "改善された台本がありません"}), 400
+    logging.info(f"台本データのキー: {list(script_data.keys())}")
+    
+    # improved_scriptキーが存在するか確認
+    if 'improved_script' not in script_data or not script_data['improved_script']:
+        logging.error(f"改善された台本が見つかりません。chapter_index: {chapter_index}, script_data keys: {list(script_data.keys())}")
+        
+        # 実験的に改善された台本が無い場合は元の台本をそのまま適用
+        logging.info("改善された台本がないため、status を review に変更します")
+        script_data['status'] = "review"
+        scripts[chapter_index] = script_data
+        
+        # ファイルに保存
+        with open(scripts_file, 'w', encoding='utf-8') as f:
+            json.dump(scripts, f, ensure_ascii=False)
+        
+        return jsonify({
+            "success": True,
+            "chapter_index": chapter_index,
+            "script": script_data,
+            "warning": "改善された台本はありませんでしたが、ステータスを更新しました"
+        })
     
     try:
         # 改善された台本を適用
+        logging.info(f"改善された台本を適用します。長さ={len(script_data['improved_script'])}")
         script_data['script_content'] = script_data['improved_script']
-        script_data['status'] = "review"
+        script_data['status'] = "completed"  # 「編集完了」ステータスに変更
+        
+        # 更新後は改善台本キーを削除
         del script_data['improved_script']
+        logging.info(f"台本更新後、improved_script キーを削除しました")
         
         # 変更を保存
         scripts[chapter_index] = script_data
-        session['scripts'] = scripts
+        
+        # ファイルに保存
+        with open(scripts_file, 'w', encoding='utf-8') as f:
+            json.dump(scripts, f, ensure_ascii=False)
+            
+        logging.info(f"台本を改善版で更新しました。chapter_index: {chapter_index}")
         
         return jsonify({
             "success": True,
@@ -562,7 +700,29 @@ def bedrock_apply_improvement():
 @app.route("/api/bedrock-scripts/get-all-scripts", methods=["GET"])
 def bedrock_get_all_scripts():
     """すべての台本を取得するAPI（Bedrock版）"""
-    scripts = session.get('scripts', [])
+    # セッションIDの確認
+    if 'session_id' not in session:
+        return jsonify({
+            "success": True,
+            "scripts": []
+        })
+    
+    session_id = session['session_id']
+    
+    # スクリプトデータをファイルから取得
+    scripts_file = session.get('scripts_file')
+    if not scripts_file or not os.path.exists(scripts_file):
+        return jsonify({
+            "success": True,
+            "scripts": []
+        })
+    
+    # スクリプトデータを読み込む
+    with open(scripts_file, 'r', encoding='utf-8') as f:
+        scripts = json.load(f)
+    
+    logging.info(f"全スクリプト取得: {len(scripts)}件")
+    
     return jsonify({
         "success": True,
         "scripts": scripts

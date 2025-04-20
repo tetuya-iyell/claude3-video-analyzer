@@ -384,14 +384,25 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // スクリプトデータを表示
     function displayScript(script) {
-        scriptTextarea.value = script.script_content;
+        // 改善された台本がある場合は、台本欄に表示し、適用ボタンも表示
+        if (script.improved_script) {
+            // 元の台本を保存
+            script._original_content = script.script_content;
+            // 改善された台本を表示
+            scriptTextarea.value = script.improved_script;
+            // 改善適用ボタンを表示
+            applyImprovementButton.classList.remove('hidden');
+            applyImprovementButton.classList.add('highlight');
+            // ステータス表示を更新（改善中に変更）
+            updateScriptStatus('improved');
+        } else {
+            // 通常の台本を表示
+            scriptTextarea.value = script.script_content;
+            // ステータス表示
+            updateScriptStatus(script.status);
+        }
         
-        // ステータス表示
-        updateScriptStatus(script.status);
-        
-        // フィードバック表示
-        // フィードバックコンテナは常に表示
-        feedbackContainer.classList.remove('hidden');
+        // フィードバックリストをクリア
         feedbackList.innerHTML = '';
         
         // 過去のフィードバック履歴を表示
@@ -411,6 +422,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // フィードバック入力欄をクリア
         feedbackTextarea.value = '';
         
+        // Note: 改善された台本の表示処理は関数の先頭に移動済み
+        
         // 分析結果の表示
         if (script.analysis) {
             analysisResult.textContent = script.analysis;
@@ -419,16 +432,8 @@ document.addEventListener('DOMContentLoaded', () => {
             analysisResult.classList.add('hidden');
         }
         
-        // 改善適用ボタンの表示/非表示
-        if (script.improved_script) {
-            // 改善された台本がある場合は表示
-            applyImprovementButton.classList.remove('hidden');
-            console.log("改善適用ボタンを表示します");
-        } else {
-            // 改善された台本がない場合は非表示
-            applyImprovementButton.classList.add('hidden');
-            console.log("改善適用ボタンを非表示にします");
-        }
+        // 改善適用ボタンの表示/非表示は上部で処理済み
+        // （改善された台本がある場合は表示する処理は上部で実装済み）
     }
     
     // スクリプトステータスを更新
@@ -444,6 +449,12 @@ document.addEventListener('DOMContentLoaded', () => {
             chapterStatus.className = 'error-message';
         } else if (status === 'review') {
             chapterStatus.textContent = 'レビュー中';
+        } else if (status === 'improved') {
+            chapterStatus.textContent = '改善された台本';
+            chapterStatus.className = 'success-message';
+        } else if (status === 'completed') {
+            chapterStatus.textContent = '編集完了';
+            chapterStatus.className = 'complete-message';
         }
     }
     
@@ -585,8 +596,6 @@ document.addEventListener('DOMContentLoaded', () => {
     rejectScriptButton.addEventListener('click', () => {
         if (currentChapterIndex < 0) return;
         
-        // フィードバックコンテナを表示する
-        feedbackContainer.classList.remove('hidden');
         // フォーカスを当てる
         feedbackTextarea.focus();
         
@@ -597,6 +606,31 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('フィードバックを入力してから再度「修正依頼」ボタンをクリックしてください。');
             return;
         }
+        
+        // アニメーション用のクラスを作成
+        const loadingAnimation = document.createElement('div');
+        loadingAnimation.className = 'script-loading-animation';
+        loadingAnimation.innerHTML = `
+            <div class="loading-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            <p>台本を改善中...</p>
+        `;
+        
+        // 現在の台本内容を保存
+        const originalContent = scriptTextarea.value;
+        
+        // テキストエリアのコンテナを取得
+        const scriptContainer = scriptTextarea.parentElement;
+        
+        // テキストエリアを非表示にして、アニメーションを表示
+        scriptTextarea.style.display = 'none';
+        scriptContainer.appendChild(loadingAnimation);
+        
+        // ステータスを更新
+        updateScriptStatus('rejected');
         
         fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
@@ -612,8 +646,17 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(response => response.json())
         .then(data => {
             if (data.success) {
+                // アニメーションを削除
+                const loadingAnimation = document.querySelector('.script-loading-animation');
+                if (loadingAnimation) {
+                    loadingAnimation.remove();
+                }
+                
+                // テキストエリアを再び表示
+                scriptTextarea.style.display = '';
+                
                 // スクリプトの状態を更新
-                scripts[currentChapterIndex].status = 'rejected';
+                scripts[currentChapterIndex].status = 'improved';
                 
                 // フィードバックリストに追加
                 if (!scripts[currentChapterIndex].feedback) {
@@ -621,31 +664,59 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 scripts[currentChapterIndex].feedback.push(feedbackText);
                 
-                // 改善された台本があれば保存
+                // 改善された台本があれば保存して表示
                 if (data.improved_script) {
+                    // 元の台本を保存
+                    scripts[currentChapterIndex]._original_content = scripts[currentChapterIndex].script_content;
+                    // 改善された台本を保存
                     scripts[currentChapterIndex].improved_script = data.improved_script;
                     
-                    // 成功メッセージとともに改善適用ボタンを表示して目立たせる
-                    alert('フィードバックを受け付けました。改善された台本が生成されました。「改善を適用」ボタンをクリックして確認してください。');
+                    // 成功メッセージの表示
+                    alert('フィードバックを受け付けました。改善された台本を表示します。');
+                    
+                    // 改善適用ボタンを表示して目立たせる
                     applyImprovementButton.classList.remove('hidden');
                     applyImprovementButton.classList.add('highlight');
+                    
+                    // 台本を更新
+                    displayScript(scripts[currentChapterIndex]);
                 } else {
                     alert('フィードバックを受け付けましたが、台本の改善に失敗しました。');
+                    // 失敗の場合は元の状態に戻す
+                    updateScriptStatus('rejected');
+                    scriptTextarea.value = scripts[currentChapterIndex].script_content;
                 }
                 
                 // UI更新
-                updateScriptStatus('rejected');
                 renderChapterList();
-                displayScript(scripts[currentChapterIndex]);
                 
                 // フィードバック入力欄をクリア
                 feedbackTextarea.value = '';
             } else {
+                // アニメーションを削除
+                const loadingAnimation = document.querySelector('.script-loading-animation');
+                if (loadingAnimation) {
+                    loadingAnimation.remove();
+                }
+                
+                // テキストエリアを再び表示
+                scriptTextarea.style.display = '';
+                scriptTextarea.value = scripts[currentChapterIndex].script_content;
                 alert('修正依頼に失敗しました: ' + data.error);
             }
         })
         .catch(error => {
             console.error('Error:', error);
+            
+            // アニメーションを削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+            
+            // テキストエリアを再び表示
+            scriptTextarea.style.display = '';
+            scriptTextarea.value = scripts[currentChapterIndex].script_content;
             alert('修正依頼処理中にエラーが発生しました。');
         });
     });
@@ -653,6 +724,25 @@ document.addEventListener('DOMContentLoaded', () => {
     // 改善適用ボタン
     applyImprovementButton.addEventListener('click', () => {
         if (currentChapterIndex < 0) return;
+        
+        // アニメーション用のクラスを作成
+        const loadingAnimation = document.createElement('div');
+        loadingAnimation.className = 'script-loading-animation';
+        loadingAnimation.innerHTML = `
+            <div class="loading-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            <p>改善内容を適用中...</p>
+        `;
+        
+        // テキストエリアのコンテナを取得
+        const scriptContainer = scriptTextarea.parentElement;
+        
+        // テキストエリアを非表示にして、アニメーションを表示
+        scriptTextarea.style.display = 'none';
+        scriptContainer.appendChild(loadingAnimation);
         
         fetch('/api/bedrock-scripts/apply-improvement', {
             method: 'POST',
@@ -665,9 +755,23 @@ document.addEventListener('DOMContentLoaded', () => {
         })
         .then(response => response.json())
         .then(data => {
+            // アニメーションを削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+            
+            // テキストエリアを再び表示
+            scriptTextarea.style.display = '';
+            
             if (data.success) {
                 // スクリプトを更新
                 scripts[currentChapterIndex] = data.script;
+                
+                // 警告があるかチェック
+                if (data.warning) {
+                    console.log("警告:", data.warning);
+                }
                 
                 // UI更新
                 displayScript(data.script);
@@ -675,15 +779,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // ハイライトを解除
                 applyImprovementButton.classList.remove('highlight');
+                applyImprovementButton.classList.add('hidden');
                 
                 // 成功メッセージ
                 alert('改善された台本を適用しました。内容を確認してください。');
             } else {
                 alert('改善の適用に失敗しました: ' + data.error);
+                // 失敗した場合は元に戻す
+                scriptTextarea.value = scripts[currentChapterIndex].improved_script || scripts[currentChapterIndex].script_content;
             }
         })
         .catch(error => {
             console.error('Error:', error);
+            
+            // アニメーションを削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+            
+            // テキストエリアを再び表示
+            scriptTextarea.style.display = '';
+            scriptTextarea.value = scripts[currentChapterIndex].improved_script || scripts[currentChapterIndex].script_content;
             alert('改善適用処理中にエラーが発生しました。');
         });
     });
