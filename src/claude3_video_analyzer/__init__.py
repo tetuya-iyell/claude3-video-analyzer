@@ -251,11 +251,17 @@ class ScriptGenerator:
         if self.analyzer.use_bedrock:
             try:
                 # Bedrock AI Agentが設定されているかチェック
-                if self.analyzer.bedrock_agent_client and self.analyzer.bedrock_agent_id and self.analyzer.bedrock_agent_alias_id:
+                if (self.analyzer.bedrock_agent_client and 
+                    self.analyzer.bedrock_agent_id and 
+                    self.analyzer.bedrock_agent_alias_id and
+                    self.analyzer.bedrock_agent_id != 'abcde12345fghi67890j' and  # サンプル値は除外
+                    self.analyzer.bedrock_agent_id != 'YOUR_AGENT_ID'):           # サンプル値は除外
+                    
                     logger.info(f"Bedrock AI Agentを使用して台本を改善します: {self.analyzer.bedrock_agent_id}")
                     
-                    # エージェント入力の準備
-                    input_text = f"""
+                    try:
+                        # エージェント入力の準備
+                        input_text = f"""
 台本の改善をお願いします。
 
 # 現在の台本
@@ -266,26 +272,30 @@ class ScriptGenerator:
 
 フィードバックを踏まえて改善した台本を作成してください。
 台本形式は元の形式を維持して、改善点を取り入れてください。
-                    """
-                    
-                    # Bedrock AI Agentの呼び出し
-                    response = self.analyzer.bedrock_agent_client.invoke_agent(
-                        agentId=self.analyzer.bedrock_agent_id,
-                        agentAliasId=self.analyzer.bedrock_agent_alias_id,
-                        sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
-                        inputText=input_text,
-                        enableTrace=True
-                    )
-                    
-                    # レスポンスの解析
-                    improved_script = response.get('completion', {}).get('text', '')
-                    
-                    if not improved_script:
-                        logger.warning("Bedrock AI Agentからの応答が空です。通常のモデル呼び出しに切り替えます。")
+                        """
+                        
+                        # Bedrock AI Agentの呼び出し
+                        response = self.analyzer.bedrock_agent_client.invoke_agent(
+                            agentId=self.analyzer.bedrock_agent_id,
+                            agentAliasId=self.analyzer.bedrock_agent_alias_id,
+                            sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
+                            inputText=input_text,
+                            enableTrace=True
+                        )
+                        
+                        # レスポンスの解析
+                        improved_script = response.get('completion', {}).get('text', '')
+                        
+                        if not improved_script:
+                            logger.warning("Bedrock AI Agentからの応答が空です。通常のモデル呼び出しに切り替えます。")
+                            # 通常のBedrock基盤モデル呼び出しにフォールバック
+                            raise ValueError("Empty response from AI Agent")
+                        
+                        logger.info(f"Bedrock AI Agentを使用して台本「{script_data['chapter_title']}」の改善が完了")
+                    except Exception as agent_error:
+                        logger.error(f"Bedrock AI Agent呼び出しエラー: {str(agent_error)}")
                         # 通常のBedrock基盤モデル呼び出しにフォールバック
-                        raise ValueError("Empty response from AI Agent")
-                    
-                    logger.info(f"Bedrock AI Agentを使用して台本「{script_data['chapter_title']}」の改善が完了")
+                        raise ValueError(f"AI Agent error: {str(agent_error)}")
                 else:
                     # 通常のBedrock基盤モデル呼び出し
                     logger.info("通常のBedrock基盤モデルを使用します")
@@ -438,8 +448,18 @@ class VideoAnalyzer:
         self.default_chapters_prompt = "これは動画のフレーム画像です。以下の形式で動画を章立てして解説してください。\n\n【形式】\n# 動画の概要\n（50-100文字程度で動画全体の概要を簡潔に説明）\n\n## 章1：タイトル\n（章の内容を説明）\n\n## 章2：タイトル\n（章の内容を説明）\n\n（必要に応じて章を追加）\n\n# まとめ\n（動画全体のポイントを簡潔にまとめる）"
         
         # Bedrock Agent用のパラメータ
-        self.bedrock_agent_id = os.getenv("BEDROCK_AGENT_ID")
-        self.bedrock_agent_alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
+        self.bedrock_agent_id = os.getenv("BEDROCK_AGENT_ID", "")
+        self.bedrock_agent_alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID", "")
+        
+        # 有効なエージェントIDとエイリアスIDがあるか検証
+        if self.bedrock_agent_id and self.bedrock_agent_alias_id:
+            # サンプル値は使用しない
+            if self.bedrock_agent_id in ['abcde12345fghi67890j', 'YOUR_AGENT_ID']:
+                logger.warning(f"無効なBEDROCK_AGENT_IDが設定されています: {self.bedrock_agent_id}")
+                self.bedrock_agent_id = ""
+                self.bedrock_agent_alias_id = ""
+            else:
+                logger.info(f"Bedrock Agentの設定を検出: Agent ID={self.bedrock_agent_id}, Alias ID={self.bedrock_agent_alias_id}")
         
         # 台本生成用のデフォルトプロンプト
         self.default_script_prompt = """あなたは不動産の解説動画「ゆっくり不動産」の台本作成専門のAIアシスタントです。
