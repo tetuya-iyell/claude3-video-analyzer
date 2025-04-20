@@ -76,99 +76,16 @@ def analyze_video():
                 yield f"data: {json.dumps({'text': progress_text})}\n\n"
 
                 # 解析タイプに基づいた処理
+                # 章立てエンドポイントにリダイレクト
                 if analyze_type == "chapters":
-                    # 章立て形式での解析
-                    # chapters_promptが指定されていればそれを使用
-                    chapters_prompt = request.form.get(
-                        "chapters_prompt", analyzer.default_chapters_prompt
-                    )
+                    # この部分はもう使われない - フロントエンドが直接 /api/analyze/chapters を呼び出す
+                    # このエンドポイントでは通常の解析のみを処理し、章立てはリダイレクトする
+                    redirect_text = "章立て解析は専用のエンドポイントで処理されます。別のAPIを呼び出してください。"
+                    yield f"data: {json.dumps({'text': redirect_text})}\n\n"
+                    yield f"data: {json.dumps({'complete': True})}\n\n"
+                    return
 
-                    # 章立て解析の実行
-                    result_text = ""
-
-                    # 直接コールバック処理を行う
-                    def callback(text):
-                        nonlocal result_text
-                        result_text += text
-                        # テキストが追加されるたびに結果ストリーミング
-
-                    # 章立てモードの場合の処理
-                    if not analyzer.use_bedrock:
-                        # Anthropic APIの場合
-                        with analyzer.client.messages.stream(
-                            model=analyzer.model,
-                            max_tokens=2048,  # 章立て形式は長くなるので最大トークン数を増やす
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        *map(
-                                            lambda x: {
-                                                "type": "image",
-                                                "source": {
-                                                    "type": "base64",
-                                                    "media_type": "image/jpeg",
-                                                    "data": x,
-                                                },
-                                            },
-                                            base64_frames,
-                                        ),
-                                        {"type": "text", "text": chapters_prompt},
-                                    ],
-                                }
-                            ],
-                        ) as stream:
-                            for text in stream.text_stream:
-                                callback(text)  # コールバック処理
-                                yield f"data: {json.dumps({'text': text})}\n\n"
-                    else:
-                        # Bedrock APIの場合
-                        body = json.dumps(
-                            {
-                                "anthropic_version": "bedrock-2023-05-31",
-                                "max_tokens": 2048,  # 章立て形式は長くなるので最大トークン数を増やす
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": [
-                                            *map(
-                                                lambda x: {
-                                                    "type": "image",
-                                                    "source": {
-                                                        "type": "base64",
-                                                        "media_type": "image/jpeg",
-                                                        "data": x,
-                                                    },
-                                                },
-                                                base64_frames,
-                                            ),
-                                            {"type": "text", "text": chapters_prompt},
-                                        ],
-                                    }
-                                ],
-                            }
-                        )
-
-                        # Bedrockにストリーミングリクエストを送信
-                        response = (
-                            analyzer.bedrock_runtime.invoke_model_with_response_stream(
-                                modelId=analyzer.model, body=body
-                            )
-                        )
-
-                        # レスポンスストリームを処理
-                        for event in response.get("body"):
-                            if "chunk" in event:
-                                chunk = json.loads(event["chunk"]["bytes"])
-                                if (
-                                    "type" in chunk
-                                    and chunk["type"] == "content_block_delta"
-                                    and "delta" in chunk
-                                ):
-                                    text = chunk["delta"].get("text", "")
-                                    if text:
-                                        callback(text)  # コールバック処理
-                                        yield f"data: {json.dumps({'text': text})}\n\n"
+                    # 以下のコードは使用されないのでコメントアウト
 
                 else:
                     # 通常の解析
@@ -287,6 +204,8 @@ def analyze_video_with_chapters():
     video_file.save(temp_path)
 
     try:
+        # フレームの取得（先に取得しておく）
+        base64_frames, _ = analyzer.get_frames_from_video(temp_path)
 
         def generate():
             """ストリーミングレスポンスを生成"""
@@ -297,25 +216,15 @@ def analyze_video_with_chapters():
                 )
                 yield f"data: {json.dumps({'text': progress_text})}\n\n"
 
-                # 章立て解析を実行
+                # 結果を保存する変数
                 result_text = ""
 
-                # 直接コールバック処理を行う
-                def callback(text):
-                    nonlocal result_text
-                    result_text += text
-                    # yieldステートメントはこの関数内では使わない
-                    # 代わりに呼び出し元のジェネレータからyieldする
-
-                # フレームを取得
-                base64_frames, _ = analyzer.get_frames_from_video(temp_path)
-
-                # APIクライアントに直接アクセス
+                # 分岐: Anthropic APIかBedrock APIかによって処理を変更
                 if not analyzer.use_bedrock:
-                    # Anthropic APIの場合
+                    # Anthropic API - クライアント直接利用
                     with analyzer.client.messages.stream(
                         model=analyzer.model,
-                        max_tokens=2048,  # 章立て形式は長くなるので最大トークン数を増やす
+                        max_tokens=2048,
                         messages=[
                             {
                                 "role": "user",
@@ -337,14 +246,14 @@ def analyze_video_with_chapters():
                         ],
                     ) as stream:
                         for text in stream.text_stream:
-                            callback(text)  # コールバック処理
+                            result_text += text
                             yield f"data: {json.dumps({'text': text})}\n\n"
                 else:
-                    # Bedrock APIの場合
+                    # Bedrock API - ストリーミングAPI呼び出し
                     body = json.dumps(
                         {
                             "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 2048,  # 章立て形式は長くなるので最大トークン数を増やす
+                            "max_tokens": 2048,
                             "messages": [
                                 {
                                     "role": "user",
@@ -367,14 +276,12 @@ def analyze_video_with_chapters():
                         }
                     )
 
-                    # Bedrockにリクエスト送信
                     response = (
                         analyzer.bedrock_runtime.invoke_model_with_response_stream(
                             modelId=analyzer.model, body=body
                         )
                     )
 
-                    # レスポンスストリーム処理
                     for event in response.get("body"):
                         if "chunk" in event:
                             chunk = json.loads(event["chunk"]["bytes"])
@@ -385,13 +292,14 @@ def analyze_video_with_chapters():
                             ):
                                 text = chunk["delta"].get("text", "")
                                 if text:
-                                    callback(text)  # コールバック処理
+                                    result_text += text
                                     yield f"data: {json.dumps({'text': text})}\n\n"
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"
 
             except Exception as e:
+                print(f"ストリーミングエラー: {str(e)}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
             finally:
                 # 一時ファイルを削除
@@ -400,9 +308,11 @@ def analyze_video_with_chapters():
                 except:
                     pass
 
+        # レスポンスの作成とリターン
         return Response(generate(), mimetype="text/event-stream")
 
     except Exception as e:
+        print(f"API全体エラー: {str(e)}")
         # 一時ファイルを削除
         try:
             os.remove(temp_path)

@@ -122,7 +122,9 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsContent.innerHTML = '';
         
         // POSTリクエスト送信し、Server-Sent Events (SSE) で結果を受信
-        fetch('/api/analyze', {
+        // 解析タイプに基づいて異なるエンドポイントを使用
+        const apiEndpoint = currentAnalyzeType === 'chapters' ? '/api/analyze/chapters' : '/api/analyze';
+        fetch(apiEndpoint, {
             method: 'POST',
             body: formData
         }).then(response => {
