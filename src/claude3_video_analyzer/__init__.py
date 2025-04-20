@@ -274,8 +274,8 @@ class ScriptGenerator:
 台本形式は元の形式を維持して、改善点を取り入れてください。
                         """
                         
-                        # Bedrock AI Agentの呼び出し
-                        response = self.analyzer.bedrock_agent_client.invoke_agent(
+                        # Bedrock AI Agentの呼び出し - EventStreamを返す
+                        response_stream = self.analyzer.bedrock_agent_client.invoke_agent(
                             agentId=self.analyzer.bedrock_agent_id,
                             agentAliasId=self.analyzer.bedrock_agent_alias_id,
                             sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
@@ -283,8 +283,37 @@ class ScriptGenerator:
                             enableTrace=True
                         )
                         
-                        # レスポンスの解析
-                        improved_script = response.get('completion', {}).get('text', '')
+                        # EventStreamからテキストを収集
+                        improved_script = ""
+                        try:
+                            logger.info("EventStreamからレスポンスを収集中...")
+                            for event in response_stream:
+                                # イベントの種類に応じて処理
+                                if 'chunk' in event:
+                                    if 'bytes' in event['chunk']:
+                                        # バイナリデータをJSONとしてパース
+                                        try:
+                                            chunk_data = json.loads(event['chunk']['bytes'].decode('utf-8'))
+                                            logger.debug(f"チャンク受信: {chunk_data}")
+                                            
+                                            # テキスト情報を抽出
+                                            if chunk_data.get('type') == 'text' and 'text' in chunk_data:
+                                                improved_script += chunk_data['text']
+                                        except json.JSONDecodeError:
+                                            logger.warning("JSONのパースに失敗しました")
+                                            continue
+                                elif 'trace' in event:
+                                    # トレース情報（デバッグ用）
+                                    logger.debug(f"トレース情報: {event['trace']}")
+                                elif 'completion' in event:
+                                    # 完了イベント
+                                    if 'completion' in event and 'result' in event['completion']:
+                                        logger.debug(f"完了: {event['completion']}")
+                                        if not improved_script and 'response' in event['completion']['result']:
+                                            improved_script = event['completion']['result']['response']
+                        except Exception as stream_error:
+                            logger.error(f"ストリーム解析エラー: {str(stream_error)}")
+                            raise ValueError(f"Stream processing error: {str(stream_error)}")
                         
                         if not improved_script:
                             logger.warning("Bedrock AI Agentからの応答が空です。通常のモデル呼び出しに切り替えます。")
