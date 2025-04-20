@@ -40,11 +40,16 @@ class VideoAnalyzer:
 
             # Bedrockクライアントの初期化
             try:
-                self.bedrock_runtime = boto3.client(
-                    service_name="bedrock-runtime",
-                    region_name=aws_region,
+                # AWS認証情報の設定を確認
+                boto3_session = boto3.Session(
                     aws_access_key_id=aws_access_key,
                     aws_secret_access_key=aws_secret_key,
+                    region_name=aws_region,
+                )
+
+                # Bedrockランタイムクライアントの作成
+                self.bedrock_runtime = boto3_session.client(
+                    service_name="bedrock-runtime",
                 )
                 self.use_bedrock = True
             except Exception as e:

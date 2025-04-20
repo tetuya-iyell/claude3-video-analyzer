@@ -21,7 +21,18 @@ UPLOAD_FOLDER = os.path.join(os.getcwd(), "resources")
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-analyzer = VideoAnalyzer()
+# 環境変数の読み込みを確認
+from dotenv import load_dotenv
+
+load_dotenv()  # 明示的に.envを読み込む
+
+# VideoAnalyzerインスタンスの作成
+try:
+    analyzer = VideoAnalyzer()
+    print(f"モード: {analyzer.mode}, Bedrock使用: {analyzer.use_bedrock}")
+except Exception as e:
+    print(f"初期化エラー: {str(e)}")
+    raise
 
 
 @app.route("/")
