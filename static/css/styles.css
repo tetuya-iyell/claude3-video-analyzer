@@ -108,12 +108,63 @@ header p {
     box-shadow: var(--shadow);
 }
 
+/* 解析タイプ選択 */
+.analysis-type-section {
+    margin-bottom: 2rem;
+}
+
+.analysis-type-section h2 {
+    font-size: 1.2rem;
+    margin-bottom: 0.8rem;
+    color: var(--primary-color);
+}
+
+.tab-container {
+    display: flex;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 1.5rem;
+}
+
+.tab {
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    margin-right: 0.5rem;
+    border-bottom: 3px solid transparent;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.tab.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+.tab:hover:not(.active) {
+    border-bottom-color: var(--accent-color);
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.hint {
+    color: var(--light-text);
+    font-size: 0.9rem;
+    font-style: italic;
+    margin-top: 0.5rem;
+}
+
 /* プロンプトエリア */
 .prompt-section {
     margin-bottom: 2rem;
 }
 
-.prompt-section h2 {
+.prompt-section h2,
+.prompt-section h3 {
     font-size: 1.2rem;
     margin-bottom: 0.5rem;
     color: var(--primary-color);

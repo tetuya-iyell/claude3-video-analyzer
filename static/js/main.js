@@ -5,16 +5,38 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileInfo = document.getElementById('file-info');
     const filename = document.getElementById('filename');
     const changeFileButton = document.getElementById('change-file');
-    const promptTextarea = document.getElementById('prompt');
+    const normalPromptTextarea = document.getElementById('normal-prompt');
+    const chaptersPromptTextarea = document.getElementById('chapters-prompt');
     const analyzeButton = document.getElementById('analyze-button');
     const loading = document.getElementById('loading');
     const resultsSection = document.getElementById('results-section');
     const resultsContent = document.getElementById('results-content');
     const copyButton = document.getElementById('copy-button');
     const newAnalysisButton = document.getElementById('new-analysis');
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
 
     // 選択された動画ファイル
     let selectedFile = null;
+    // 現在の解析タイプ（normalまたはchapters）
+    let currentAnalyzeType = 'normal';
+
+    // タブ切り替え処理
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            // 現在のアクティブタブを非アクティブに
+            document.querySelector('.tab.active').classList.remove('active');
+            document.querySelector('.tab-content.active').classList.remove('active');
+            
+            // クリックされたタブをアクティブに
+            tab.classList.add('active');
+            const tabId = tab.getAttribute('data-tab');
+            document.getElementById(tabId).classList.add('active');
+            
+            // 解析タイプを設定
+            currentAnalyzeType = tabId === 'chapters-tab' ? 'chapters' : 'normal';
+        });
+    });
 
     // ドラッグ&ドロップイベント
     ['dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -85,7 +107,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // FormDataの作成
         const formData = new FormData();
         formData.append('video', selectedFile);
-        formData.append('prompt', promptTextarea.value);
+        formData.append('analyze_type', currentAnalyzeType);
+        
+        // 解析タイプに基づいてプロンプトを選択
+        if (currentAnalyzeType === 'chapters') {
+            formData.append('prompt', chaptersPromptTextarea.value);
+            formData.append('chapters_prompt', chaptersPromptTextarea.value);
+        } else {
+            formData.append('prompt', normalPromptTextarea.value);
+        }
         
         // 解析セクションを表示
         resultsSection.classList.remove('hidden');

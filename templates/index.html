@@ -30,9 +30,27 @@
                 </div>
             </div>
             
-            <div class="prompt-section">
-                <h2>解析プロンプト</h2>
-                <textarea id="prompt" rows="5" placeholder="動画解析のためのプロンプトを入力してください">{{ default_prompt }}</textarea>
+            <div class="analysis-type-section">
+                <h2>解析タイプ</h2>
+                <div class="tab-container">
+                    <div class="tab active" data-tab="normal-tab">通常解析</div>
+                    <div class="tab" data-tab="chapters-tab">章立て解析</div>
+                </div>
+                
+                <div class="tab-content active" id="normal-tab">
+                    <div class="prompt-section">
+                        <h3>解析プロンプト</h3>
+                        <textarea id="normal-prompt" rows="5" placeholder="動画解析のためのプロンプトを入力してください">{{ default_prompt }}</textarea>
+                    </div>
+                </div>
+                
+                <div class="tab-content" id="chapters-tab">
+                    <div class="prompt-section">
+                        <h3>章立て解析プロンプト</h3>
+                        <textarea id="chapters-prompt" rows="5" placeholder="章立て解析のためのプロンプトを入力してください">{{ default_chapters_prompt }}</textarea>
+                        <p class="hint">章立て解析では、動画の内容を章ごとに構造化して解説します</p>
+                    </div>
+                </div>
             </div>
             
             <div class="action-section">
