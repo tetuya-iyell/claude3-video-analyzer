@@ -86,8 +86,13 @@ def analyze_video():
                     # 章立て解析の実行
                     result_text = ""
 
-                    # 章立てモードの場合は特別なAPIエンドポイントにリダイレクト
-                    # このケースでは専用のAPIを呼び出すため、ここは簡単に実行
+                    # 直接コールバック処理を行う
+                    def callback(text):
+                        nonlocal result_text
+                        result_text += text
+                        # テキストが追加されるたびに結果ストリーミング
+
+                    # 章立てモードの場合の処理
                     if not analyzer.use_bedrock:
                         # Anthropic APIの場合
                         with analyzer.client.messages.stream(
@@ -114,6 +119,7 @@ def analyze_video():
                             ],
                         ) as stream:
                             for text in stream.text_stream:
+                                callback(text)  # コールバック処理
                                 yield f"data: {json.dumps({'text': text})}\n\n"
                     else:
                         # Bedrock APIの場合
@@ -161,6 +167,7 @@ def analyze_video():
                                 ):
                                     text = chunk["delta"].get("text", "")
                                     if text:
+                                        callback(text)  # コールバック処理
                                         yield f"data: {json.dumps({'text': text})}\n\n"
 
                 else:
@@ -293,14 +300,93 @@ def analyze_video_with_chapters():
                 # 章立て解析を実行
                 result_text = ""
 
+                # 直接コールバック処理を行う
                 def callback(text):
                     nonlocal result_text
                     result_text += text
-                    yield f"data: {json.dumps({'text': text})}\n\n"
+                    # yieldステートメントはこの関数内では使わない
+                    # 代わりに呼び出し元のジェネレータからyieldする
 
-                analyzer.analyze_video_with_chapters(
-                    file_path=temp_path, prompt=prompt, stream_callback=callback
-                )
+                # フレームを取得
+                base64_frames, _ = analyzer.get_frames_from_video(temp_path)
+
+                # APIクライアントに直接アクセス
+                if not analyzer.use_bedrock:
+                    # Anthropic APIの場合
+                    with analyzer.client.messages.stream(
+                        model=analyzer.model,
+                        max_tokens=2048,  # 章立て形式は長くなるので最大トークン数を増やす
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    *map(
+                                        lambda x: {
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": "image/jpeg",
+                                                "data": x,
+                                            },
+                                        },
+                                        base64_frames,
+                                    ),
+                                    {"type": "text", "text": prompt},
+                                ],
+                            }
+                        ],
+                    ) as stream:
+                        for text in stream.text_stream:
+                            callback(text)  # コールバック処理
+                            yield f"data: {json.dumps({'text': text})}\n\n"
+                else:
+                    # Bedrock APIの場合
+                    body = json.dumps(
+                        {
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 2048,  # 章立て形式は長くなるので最大トークン数を増やす
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        *map(
+                                            lambda x: {
+                                                "type": "image",
+                                                "source": {
+                                                    "type": "base64",
+                                                    "media_type": "image/jpeg",
+                                                    "data": x,
+                                                },
+                                            },
+                                            base64_frames,
+                                        ),
+                                        {"type": "text", "text": prompt},
+                                    ],
+                                }
+                            ],
+                        }
+                    )
+
+                    # Bedrockにリクエスト送信
+                    response = (
+                        analyzer.bedrock_runtime.invoke_model_with_response_stream(
+                            modelId=analyzer.model, body=body
+                        )
+                    )
+
+                    # レスポンスストリーム処理
+                    for event in response.get("body"):
+                        if "chunk" in event:
+                            chunk = json.loads(event["chunk"]["bytes"])
+                            if (
+                                "type" in chunk
+                                and chunk["type"] == "content_block_delta"
+                                and "delta" in chunk
+                            ):
+                                text = chunk["delta"].get("text", "")
+                                if text:
+                                    callback(text)  # コールバック処理
+                                    yield f"data: {json.dumps({'text': text})}\n\n"
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"
