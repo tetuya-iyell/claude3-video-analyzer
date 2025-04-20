@@ -421,9 +421,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // 改善適用ボタンの表示/非表示
         if (script.improved_script) {
+            // 改善された台本がある場合は表示
             applyImprovementButton.classList.remove('hidden');
+            console.log("改善適用ボタンを表示します");
         } else {
+            // 改善された台本がない場合は非表示
             applyImprovementButton.classList.add('hidden');
+            console.log("改善適用ボタンを非表示にします");
         }
     }
     
@@ -620,6 +624,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 改善された台本があれば保存
                 if (data.improved_script) {
                     scripts[currentChapterIndex].improved_script = data.improved_script;
+                    
+                    // 成功メッセージとともに改善適用ボタンを表示して目立たせる
+                    alert('フィードバックを受け付けました。改善された台本が生成されました。「改善を適用」ボタンをクリックして確認してください。');
+                    applyImprovementButton.classList.remove('hidden');
+                    applyImprovementButton.classList.add('highlight');
+                } else {
+                    alert('フィードバックを受け付けましたが、台本の改善に失敗しました。');
                 }
                 
                 // UI更新
@@ -661,6 +672,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // UI更新
                 displayScript(data.script);
                 renderChapterList();
+                
+                // ハイライトを解除
+                applyImprovementButton.classList.remove('highlight');
+                
+                // 成功メッセージ
+                alert('改善された台本を適用しました。内容を確認してください。');
             } else {
                 alert('改善の適用に失敗しました: ' + data.error);
             }
