@@ -59,15 +59,21 @@ class VideoAnalyzer:
                 f"Unsupported mode '{self.mode}'. Use 'anthropic' or 'bedrock'."
             )
 
-        # デフォルトの設定
+        # モードに応じたモデルIDを環境変数から取得
         if self.use_bedrock:
-            self.model = (
-                "anthropic.claude-3-5-sonnet-20240620-v1:0"  # オンデマンド対応のモデル
+            # Bedrockモードの場合はBEDROCK_MODEL_IDを使用
+            default_model = (
+                "anthropic.claude-3-5-sonnet-20240620-v1:0"  # フォールバック値
             )
+            self.model = os.getenv("BEDROCK_MODEL_ID", default_model)
+            print(f"Bedrock mode: Using model {self.model}")
         else:
-            self.model = "claude-3-sonnet-20240229"  # モデルを指定 "claude-3-opus-20240229" or "claude-3-sonnet-20240229"
+            # Anthropicモードの場合はANTHROPIC_MODEL_IDを使用
+            default_model = "claude-3-sonnet-20240229"  # フォールバック値
+            self.model = os.getenv("ANTHROPIC_MODEL_ID", default_model)
+            print(f"Anthropic mode: Using model {self.model}")
 
-        # 環境変数でモデルを上書き可能に
+        # 後方互換性のために、MODEL_IDがあれば最優先で使用
         self.model = os.getenv("MODEL_ID", self.model)
 
         # デフォルトプロンプト
