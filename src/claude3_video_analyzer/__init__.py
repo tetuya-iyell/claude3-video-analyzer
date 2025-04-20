@@ -250,26 +250,85 @@ class ScriptGenerator:
         # Bedrockモードの場合はBedrockを使用
         if self.analyzer.use_bedrock:
             try:
-                # Bedrockモデル呼び出し
-                response = self.analyzer.bedrock_runtime.invoke_model(
-                    modelId=self.analyzer.model,
-                    body=json.dumps({
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 2000,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ]
-                    })
-                )
-                
-                # レスポンスの解析
-                response_body = json.loads(response.get('body').read())
-                improved_script = response_body['content'][0]['text']
-                
-                logger.info(f"台本「{script_data['chapter_title']}」の改善が完了")
+                # Bedrock AI Agentが設定されているかチェック
+                if self.analyzer.bedrock_agent_client and self.analyzer.bedrock_agent_id and self.analyzer.bedrock_agent_alias_id:
+                    logger.info(f"Bedrock AI Agentを使用して台本を改善します: {self.analyzer.bedrock_agent_id}")
+                    
+                    # エージェント入力の準備
+                    input_text = f"""
+台本の改善をお願いします。
+
+# 現在の台本
+{script_data['script_content']}
+
+# フィードバック
+{feedback}
+
+フィードバックを踏まえて改善した台本を作成してください。
+台本形式は元の形式を維持して、改善点を取り入れてください。
+                    """
+                    
+                    # Bedrock AI Agentの呼び出し
+                    response = self.analyzer.bedrock_agent_client.invoke_agent(
+                        agentId=self.analyzer.bedrock_agent_id,
+                        agentAliasId=self.analyzer.bedrock_agent_alias_id,
+                        sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
+                        inputText=input_text,
+                        enableTrace=True
+                    )
+                    
+                    # レスポンスの解析
+                    improved_script = response.get('completion', {}).get('text', '')
+                    
+                    if not improved_script:
+                        logger.warning("Bedrock AI Agentからの応答が空です。通常のモデル呼び出しに切り替えます。")
+                        # 通常のBedrock基盤モデル呼び出しにフォールバック
+                        raise ValueError("Empty response from AI Agent")
+                    
+                    logger.info(f"Bedrock AI Agentを使用して台本「{script_data['chapter_title']}」の改善が完了")
+                else:
+                    # 通常のBedrock基盤モデル呼び出し
+                    logger.info("通常のBedrock基盤モデルを使用します")
+                    response = self.analyzer.bedrock_runtime.invoke_model(
+                        modelId=self.analyzer.model,
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 2000,
+                            "messages": [
+                                {"role": "user", "content": prompt}
+                            ]
+                        })
+                    )
+                    
+                    # レスポンスの解析
+                    response_body = json.loads(response.get('body').read())
+                    improved_script = response_body['content'][0]['text']
+                    
+                    logger.info(f"Bedrock基盤モデルを使用して台本「{script_data['chapter_title']}」の改善が完了")
             except Exception as e:
                 logger.error(f"台本改善中にエラーが発生: {str(e)}")
-                raise
+                # エラーの場合は通常のモデル呼び出しを試みる
+                try:
+                    logger.info("エラー発生のため通常のBedrock基盤モデルにフォールバック")
+                    response = self.analyzer.bedrock_runtime.invoke_model(
+                        modelId=self.analyzer.model,
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 2000,
+                            "messages": [
+                                {"role": "user", "content": prompt}
+                            ]
+                        })
+                    )
+                    
+                    # レスポンスの解析
+                    response_body = json.loads(response.get('body').read())
+                    improved_script = response_body['content'][0]['text']
+                    
+                    logger.info(f"フォールバック: 通常のBedrock基盤モデルを使用して台本の改善が完了")
+                except Exception as fallback_error:
+                    logger.error(f"フォールバックにも失敗: {str(fallback_error)}")
+                    raise
         else:
             # Anthropic APIの場合
             try:
@@ -299,6 +358,10 @@ class VideoAnalyzer:
         self.use_bedrock = False
         self.bedrock_client = None
         self.bedrock_agent_client = None  # Bedrock Agent用クライアント
+        
+        # 時間モジュールのインポート
+        import time
+        self.time_module = time
 
         # Anthropicクライアント用の設定
         if self.mode == "anthropic":
