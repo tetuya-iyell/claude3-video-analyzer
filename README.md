@@ -10,6 +10,7 @@ Claude3 Video Analyzerは、Anthropic社のClaude-3モデルのマルチモー�
 - Webインターフェースでの動画アップロード、プロンプトの編集と解析機能
 - ドラッグ＆ドロップによる簡単な動画選択
 - **章立て解析機能** で動画の内容を構造化された形式で出力（[詳細はこちら](docs/chapter-analysis-feature.md)）
+- **ゆっくり不動産台本生成機能** で章立て解析結果から台本を自動生成（[詳細はこちら](docs/goose-script-generator.md)）
 
 ## 必要条件
 
