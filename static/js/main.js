@@ -13,13 +13,38 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultsContent = document.getElementById('results-content');
     const copyButton = document.getElementById('copy-button');
     const newAnalysisButton = document.getElementById('new-analysis');
+    const generateScriptsButton = document.getElementById('generate-scripts-button');
     const tabs = document.querySelectorAll('.tab');
     const tabContents = document.querySelectorAll('.tab-content');
+    
+    // 台本エディタ関連
+    const scriptEditorSection = document.getElementById('script-editor-section');
+    const chapterList = document.getElementById('chapter-list');
+    const chapterTitle = document.getElementById('chapter-title');
+    const chapterStatus = document.getElementById('chapter-status');
+    const chapterSummary = document.getElementById('chapter-summary');
+    const scriptTextarea = document.getElementById('script-textarea');
+    const feedbackContainer = document.getElementById('feedback-container');
+    const feedbackList = document.getElementById('feedback-list');
+    const feedbackTextarea = document.getElementById('feedback-textarea');
+    const analysisResult = document.getElementById('analysis-result');
+    const analyzeScriptButton = document.getElementById('analyze-script-button');
+    const approveScriptButton = document.getElementById('approve-script-button');
+    const rejectScriptButton = document.getElementById('reject-script-button');
+    const applyImprovementButton = document.getElementById('apply-improvement-button');
 
     // 選択された動画ファイル
     let selectedFile = null;
     // 現在の解析タイプ（normalまたはchapters）
     let currentAnalyzeType = 'normal';
+    // 解析結果テキスト
+    let analysisText = '';
+    // 章情報
+    let chapters = [];
+    // 台本データ
+    let scripts = [];
+    // 現在選択されている章インデックス
+    let currentChapterIndex = -1;
 
     // タブ切り替え処理
     tabs.forEach(tab => {
@@ -221,5 +246,412 @@ document.addEventListener('DOMContentLoaded', () => {
         analyzeButton.disabled = true;
         resultsSection.classList.add('hidden');
         resultsContent.innerHTML = '';
+        scriptEditorSection.style.display = 'none';
     });
+    
+    // 章立て解析後に台本生成ボタンを表示する
+    function showScriptGenerationOption() {
+        if (currentAnalyzeType === 'chapters') {
+            // 章立て解析の場合のみ、台本生成ボタンを表示
+            generateScriptsButton.classList.remove('hidden');
+            // 解析テキストを保存
+            analysisText = resultsContent.innerText;
+        } else {
+            generateScriptsButton.classList.add('hidden');
+        }
+    }
+    
+    // 台本生成ボタン
+    generateScriptsButton.addEventListener('click', () => {
+        // 解析テキストから章構造を抽出するAPIを呼び出す
+        fetch('/api/goose/analyze-chapters', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                analysis_text: analysisText
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // 章情報を保存
+                chapters = data.chapters;
+                
+                // 台本エディタUIを表示
+                setupScriptEditor();
+            } else {
+                alert('章構造の抽出に失敗しました: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('章構造の抽出中にエラーが発生しました。');
+        });
+    });
+    
+    // 台本エディタUIのセットアップ
+    function setupScriptEditor() {
+        // 台本編集セクションを表示
+        scriptEditorSection.style.display = 'block';
+        
+        // チャプターリストを生成
+        renderChapterList();
+        
+        // 最初のチャプターを選択
+        if (chapters.length > 0) {
+            selectChapter(0);
+        }
+        
+        // 解析結果セクションを隠す（任意）
+        // resultsSection.classList.add('hidden');
+    }
+    
+    // チャプターリストを描画
+    function renderChapterList() {
+        chapterList.innerHTML = '';
+        
+        chapters.forEach((chapter, index) => {
+            const chapterItem = document.createElement('div');
+            chapterItem.className = 'chapter-item';
+            chapterItem.textContent = `${chapter.chapter_num}. ${chapter.chapter_title}`;
+            chapterItem.dataset.index = index;
+            
+            // 台本の状態に応じてクラスを追加
+            const script = scripts[index];
+            if (script) {
+                if (script.status === 'approved') {
+                    chapterItem.classList.add('approved');
+                } else if (script.status === 'rejected') {
+                    chapterItem.classList.add('rejected');
+                }
+            }
+            
+            // クリックイベント
+            chapterItem.addEventListener('click', () => {
+                selectChapter(index);
+            });
+            
+            chapterList.appendChild(chapterItem);
+        });
+    }
+    
+    // チャプター選択処理
+    function selectChapter(index) {
+        // 現在選択中のチャプターのハイライトを解除
+        const currentSelected = chapterList.querySelector('.active');
+        if (currentSelected) {
+            currentSelected.classList.remove('active');
+        }
+        
+        // 新しいチャプターをハイライト
+        const newSelected = chapterList.querySelector(`[data-index="${index}"]`);
+        if (newSelected) {
+            newSelected.classList.add('active');
+        }
+        
+        // 現在のチャプターインデックスを更新
+        currentChapterIndex = index;
+        const chapter = chapters[index];
+        
+        // チャプタータイトルとサマリーを表示
+        chapterTitle.textContent = `${chapter.chapter_num}. ${chapter.chapter_title}`;
+        chapterSummary.textContent = chapter.chapter_summary;
+        
+        // スクリプトデータがあれば表示、なければ生成
+        const script = scripts[index];
+        if (script) {
+            displayScript(script);
+        } else {
+            generateScript(index);
+        }
+    }
+    
+    // スクリプトデータを表示
+    function displayScript(script) {
+        scriptTextarea.value = script.script_content;
+        
+        // ステータス表示
+        updateScriptStatus(script.status);
+        
+        // フィードバック表示
+        if (script.feedback && script.feedback.length > 0) {
+            feedbackContainer.classList.remove('hidden');
+            feedbackList.innerHTML = '';
+            
+            script.feedback.forEach(feedback => {
+                const feedbackItem = document.createElement('div');
+                feedbackItem.className = 'script-feedback';
+                feedbackItem.textContent = feedback;
+                feedbackList.appendChild(feedbackItem);
+            });
+        } else {
+            feedbackContainer.classList.add('hidden');
+        }
+        
+        // 分析結果の表示
+        if (script.analysis) {
+            analysisResult.textContent = script.analysis;
+            analysisResult.classList.remove('hidden');
+        } else {
+            analysisResult.classList.add('hidden');
+        }
+        
+        // 改善適用ボタンの表示/非表示
+        if (script.improved_script) {
+            applyImprovementButton.classList.remove('hidden');
+        } else {
+            applyImprovementButton.classList.add('hidden');
+        }
+    }
+    
+    // スクリプトステータスを更新
+    function updateScriptStatus(status) {
+        chapterStatus.textContent = '';
+        chapterStatus.className = '';
+        
+        if (status === 'approved') {
+            chapterStatus.textContent = '承認済み';
+            chapterStatus.className = 'success-message';
+        } else if (status === 'rejected') {
+            chapterStatus.textContent = '修正依頼中';
+            chapterStatus.className = 'error-message';
+        } else if (status === 'review') {
+            chapterStatus.textContent = 'レビュー中';
+        }
+    }
+    
+    // 台本を生成する
+    function generateScript(index) {
+        // ローディング表示
+        scriptTextarea.value = '台本を生成中...';
+        scriptTextarea.disabled = true;
+        
+        fetch('/api/goose/generate-script', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                chapter_index: index,
+                chapters: chapters
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // 生成された台本を保存
+                scripts[index] = data.script;
+                
+                // 表示を更新
+                scriptTextarea.value = data.script.script_content;
+                scriptTextarea.disabled = false;
+                
+                // ステータス表示
+                updateScriptStatus(data.script.status);
+                
+                // チャプターリストの表示を更新
+                renderChapterList();
+            } else {
+                scriptTextarea.value = '台本の生成に失敗しました: ' + data.error;
+                scriptTextarea.disabled = false;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            scriptTextarea.value = '台本の生成中にエラーが発生しました。';
+            scriptTextarea.disabled = false;
+        });
+    }
+    
+    // 台本分析ボタン
+    analyzeScriptButton.addEventListener('click', () => {
+        if (currentChapterIndex < 0) return;
+        
+        // 現在の台本内容を取得
+        const scriptContent = scriptTextarea.value;
+        
+        // 分析中表示
+        analysisResult.textContent = '台本を分析中...';
+        analysisResult.classList.remove('hidden');
+        
+        fetch('/api/goose/analyze-script', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                chapter_index: currentChapterIndex,
+                script_content: scriptContent
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // 分析結果を表示
+                analysisResult.textContent = data.analysis;
+                
+                // スクリプトのpassed状態を更新
+                scripts[currentChapterIndex].passed = data.passed;
+                scripts[currentChapterIndex].analysis = data.analysis;
+                
+                // 結果に応じたスタイル適用
+                if (data.passed) {
+                    analysisResult.className = 'script-feedback success-message';
+                } else {
+                    analysisResult.className = 'script-feedback error-message';
+                }
+            } else {
+                analysisResult.textContent = '分析に失敗しました: ' + data.error;
+                analysisResult.className = 'script-feedback error-message';
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            analysisResult.textContent = '分析中にエラーが発生しました。';
+            analysisResult.className = 'script-feedback error-message';
+        });
+    });
+    
+    // 台本承認ボタン
+    approveScriptButton.addEventListener('click', () => {
+        if (currentChapterIndex < 0) return;
+        
+        // フィードバックを取得（空でも可）
+        const feedbackText = feedbackTextarea.value || '承認しました。';
+        
+        fetch('/api/goose/submit-feedback', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                chapter_index: currentChapterIndex,
+                feedback: feedbackText,
+                is_approved: true
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // スクリプトの状態を更新
+                scripts[currentChapterIndex].status = 'approved';
+                
+                // UI更新
+                updateScriptStatus('approved');
+                renderChapterList();
+                
+                // 次のチャプターがあれば選択
+                if (currentChapterIndex + 1 < chapters.length) {
+                    selectChapter(currentChapterIndex + 1);
+                }
+            } else {
+                alert('承認に失敗しました: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('承認処理中にエラーが発生しました。');
+        });
+    });
+    
+    // 修正依頼ボタン
+    rejectScriptButton.addEventListener('click', () => {
+        if (currentChapterIndex < 0) return;
+        
+        // フィードバックを取得
+        const feedbackText = feedbackTextarea.value;
+        if (!feedbackText) {
+            alert('修正依頼にはフィードバックが必要です。');
+            return;
+        }
+        
+        fetch('/api/goose/submit-feedback', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                chapter_index: currentChapterIndex,
+                feedback: feedbackText,
+                is_approved: false
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // スクリプトの状態を更新
+                scripts[currentChapterIndex].status = 'rejected';
+                
+                // フィードバックリストに追加
+                if (!scripts[currentChapterIndex].feedback) {
+                    scripts[currentChapterIndex].feedback = [];
+                }
+                scripts[currentChapterIndex].feedback.push(feedbackText);
+                
+                // 改善された台本があれば保存
+                if (data.improved_script) {
+                    scripts[currentChapterIndex].improved_script = data.improved_script;
+                }
+                
+                // UI更新
+                updateScriptStatus('rejected');
+                renderChapterList();
+                displayScript(scripts[currentChapterIndex]);
+                
+                // フィードバック入力欄をクリア
+                feedbackTextarea.value = '';
+            } else {
+                alert('修正依頼に失敗しました: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('修正依頼処理中にエラーが発生しました。');
+        });
+    });
+    
+    // 改善適用ボタン
+    applyImprovementButton.addEventListener('click', () => {
+        if (currentChapterIndex < 0) return;
+        
+        fetch('/api/goose/apply-improvement', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                chapter_index: currentChapterIndex
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // スクリプトを更新
+                scripts[currentChapterIndex] = data.script;
+                
+                // UI更新
+                displayScript(data.script);
+                renderChapterList();
+            } else {
+                alert('改善の適用に失敗しました: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('改善適用処理中にエラーが発生しました。');
+        });
+    });
+    
+    // 解析完了時に台本生成オプションを表示
+    const originalStartAnalysis = startAnalysis;
+    startAnalysis = function() {
+        originalStartAnalysis();
+        
+        // ページ読み込み完了後に台本生成ボタンを表示判定
+        setTimeout(() => {
+            showScriptGenerationOption();
+        }, 1000);
+    };
 });

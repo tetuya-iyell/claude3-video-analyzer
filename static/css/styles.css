@@ -291,6 +291,108 @@ textarea:focus {
     overflow-y: auto;
 }
 
+/* スクリプトエディタ関連 */
+.script-editor-section {
+    margin-top: 2rem;
+    display: none;
+}
+
+.script-editor {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-gap: 1rem;
+}
+
+.editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.editor-header h3 {
+    margin: 0;
+    color: var(--primary-color);
+}
+
+.chapter-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.chapter-item {
+    background-color: var(--secondary-color);
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.chapter-item.active {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.chapter-item.approved {
+    border-left: 4px solid var(--success-color);
+}
+
+.chapter-item.rejected {
+    border-left: 4px solid var(--error-color);
+}
+
+.script-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.script-textarea {
+    width: 100%;
+    min-height: 300px;
+    font-family: inherit;
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.script-feedback {
+    background-color: #f9f9f9;
+    border-left: 4px solid var(--primary-color);
+    padding: 1rem;
+    border-radius: 4px;
+}
+
+.script-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.feedback-area {
+    width: 100%;
+    min-height: 100px;
+    margin-bottom: 1rem;
+}
+
+.success-message {
+    background-color: rgba(76, 175, 80, 0.1);
+    color: #4CAF50;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    margin: 0.5rem 0;
+}
+
+.error-message {
+    background-color: rgba(244, 67, 54, 0.1);
+    color: #F44336;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    margin: 0.5rem 0;
+}
+
 .results-container p {
     margin-bottom: 1rem;
 }

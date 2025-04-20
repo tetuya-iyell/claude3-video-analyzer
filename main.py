@@ -9,12 +9,18 @@ from flask import (
     render_template,
     Response,
     send_from_directory,
+    session,
 )
 from flask_cors import CORS
 from src.claude3_video_analyzer import VideoAnalyzer
+from goose_lib.api import goose_bp
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
 CORS(app)
+
+# Goose API Blueprintを登録
+app.register_blueprint(goose_bp)
 
 # アップロードされた動画を保存するディレクトリ
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "resources")

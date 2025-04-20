@@ -67,6 +67,42 @@
                 <div class="action-buttons">
                     <button id="copy-button" class="outline-button">結果をコピー</button>
                     <button id="new-analysis" class="secondary-button">新しい解析</button>
+                    <button id="generate-scripts-button" class="primary-button hidden">台本生成</button>
+                </div>
+            </div>
+            
+            <div class="script-editor-section" id="script-editor-section">
+                <h2>ゆっくり不動産台本エディタ</h2>
+                
+                <div class="chapter-list" id="chapter-list">
+                    <!-- チャプターリストが動的に生成されます -->
+                </div>
+                
+                <div class="script-editor" id="script-editor">
+                    <div class="editor-header">
+                        <h3 id="chapter-title">台本編集</h3>
+                        <span id="chapter-status"></span>
+                    </div>
+                    
+                    <div class="script-content">
+                        <div id="chapter-summary" class="script-feedback"></div>
+                        <textarea id="script-textarea" class="script-textarea" placeholder="台本内容がここに表示されます..."></textarea>
+                        
+                        <div id="feedback-container" class="hidden">
+                            <h4>フィードバック</h4>
+                            <div id="feedback-list"></div>
+                            <textarea id="feedback-textarea" class="feedback-area" placeholder="フィードバックを入力してください..."></textarea>
+                        </div>
+                        
+                        <div id="analysis-result" class="script-feedback hidden"></div>
+                        
+                        <div class="script-controls">
+                            <button id="analyze-script-button" class="outline-button">台本を分析</button>
+                            <button id="approve-script-button" class="primary-button">承認</button>
+                            <button id="reject-script-button" class="secondary-button">修正依頼</button>
+                            <button id="apply-improvement-button" class="primary-button hidden">改善を適用</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>
