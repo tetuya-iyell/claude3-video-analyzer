@@ -390,10 +390,13 @@ document.addEventListener('DOMContentLoaded', () => {
         updateScriptStatus(script.status);
         
         // フィードバック表示
+        // フィードバックコンテナは常に表示
+        feedbackContainer.classList.remove('hidden');
+        feedbackList.innerHTML = '';
+        
+        // 過去のフィードバック履歴を表示
         if (script.feedback && script.feedback.length > 0) {
-            feedbackContainer.classList.remove('hidden');
-            feedbackList.innerHTML = '';
-            
+            // 過去のフィードバック履歴がある場合
             script.feedback.forEach(feedback => {
                 const feedbackItem = document.createElement('div');
                 feedbackItem.className = 'script-feedback';
@@ -401,8 +404,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 feedbackList.appendChild(feedbackItem);
             });
         } else {
-            feedbackContainer.classList.add('hidden');
+            // フィードバック履歴がない場合
+            feedbackList.innerHTML = '<p>まだフィードバックはありません</p>';
         }
+        
+        // フィードバック入力欄をクリア
+        feedbackTextarea.value = '';
         
         // 分析結果の表示
         if (script.analysis) {
@@ -574,10 +581,16 @@ document.addEventListener('DOMContentLoaded', () => {
     rejectScriptButton.addEventListener('click', () => {
         if (currentChapterIndex < 0) return;
         
-        // フィードバックを取得
+        // フィードバックコンテナを表示する
+        feedbackContainer.classList.remove('hidden');
+        // フォーカスを当てる
+        feedbackTextarea.focus();
+        
+        // 既にフィードバックが入力されているか確認
         const feedbackText = feedbackTextarea.value;
         if (!feedbackText) {
-            alert('修正依頼にはフィードバックが必要です。');
+            // フィードバックが入力されていない場合は入力を促すだけ
+            alert('フィードバックを入力してから再度「修正依頼」ボタンをクリックしてください。');
             return;
         }
         

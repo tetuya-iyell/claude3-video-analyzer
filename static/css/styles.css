@@ -375,6 +375,17 @@ textarea:focus {
     width: 100%;
     min-height: 100px;
     margin-bottom: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    font-family: inherit;
+    font-size: 1rem;
+    resize: vertical;
+}
+
+.feedback-area:focus {
+    outline: none;
+    border-color: var(--primary-color);
 }
 
 .success-message {
