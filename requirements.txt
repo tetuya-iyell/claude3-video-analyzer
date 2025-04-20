@@ -1,9 +1,12 @@
+# 基本依存関係
 anthropic==0.18.1
 python-dotenv==1.0.0
 opencv-python==4.8.1.78
 boto3==1.34.69
 flask==2.3.3
 flask-cors==4.0.0
-langchain==0.0.267
-langchain-anthropic==0.1.0
 pydantic==1.10.8
+
+# langchainは現在使用していません - 互換性エラーの原因
+# langchain==0.0.267
+# langchain-anthropic==0.1.0

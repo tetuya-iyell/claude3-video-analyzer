@@ -4,10 +4,10 @@
 
 import os
 import json
+import traceback
+import sys
 from typing import List, Dict, Any, Optional, Tuple
 import anthropic
-from langchain.prompts import PromptTemplate
-from langchain_anthropic import ChatAnthropic
 
 from .models import ChapterScript, ScriptFeedback
 
@@ -22,26 +22,37 @@ class ScriptAgent:
             model_name: 使用するモデル名
             api_key: APIキー（指定がなければ環境変数から取得）
         """
+        # APIキーの取得とクライアント初期化
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        
+        # AnthropicクライアントをAPI経由でシンプルに初期化
+        try:
+            # Anthropicバージョンに応じた初期化
+            anthropic_ver = anthropic.__version__
+            print(f"Anthropicバージョン: {anthropic_ver}")
+            
+            # バージョン0.7.0用の初期化パラメータ
+            self.client = anthropic.Client(api_key=self.api_key)
+            print("Anthropicクライアント初期化成功")
+        except Exception as e:
+            print(f"Anthropicクライアント初期化エラー: {str(e)}")
+            traceback.print_exc()
+            raise
+            
+        # モデル名の設定
         self.model_name = model_name or os.environ.get("ANTHROPIC_MODEL_ID", "claude-3-sonnet-20240229")
+        print(f"使用モデル: {self.model_name}")
         
         # サンプル台本のパスを設定
         script_folder = os.path.join(os.getcwd(), "goose_lib", "sample_scripts")
         os.makedirs(script_folder, exist_ok=True)
         self.sample_script_path = os.path.join(script_folder, "sample_scripts.json")
         
-        # LangChain統合
-        self.llm = ChatAnthropic(
-            model_name=self.model_name,
-            temperature=0.7,
-            anthropic_api_key=self.api_key
-        )
+        # 注意: langchainは使用しません（互換性問題のため）
+        # langchain-anthropicモジュールを使用すると'proxies'パラメータでエラーが発生します
         
-        # 台本生成プロンプトテンプレート
-        self.script_prompt = PromptTemplate(
-            input_variables=["chapter_title", "chapter_summary", "sample_script"],
-            template="""
+        # 台本生成プロンプトテンプレート - 直接文字列として保持
+        self.script_prompt = """
 あなたは不動産の解説動画「ゆっくり不動産」の台本作成専門のAIアシスタントです。
 以下の章タイトルと概要に基づいて、ゆっくり不動産の台本を作成してください。
 
@@ -63,12 +74,9 @@ class ScriptAgent:
 
 台本を作成してください：
 """
-        )
         
-        # フィードバック分析プロンプトテンプレート
-        self.feedback_analysis_prompt = PromptTemplate(
-            input_variables=["script_content", "feedback"],
-            template="""
+        # フィードバック分析プロンプトテンプレート - 直接文字列として保持
+        self.feedback_analysis_prompt = """
 あなたは不動産の解説動画「ゆっくり不動産」の台本編集アシスタントです。
 以下の台本とフィードバックに基づいて、台本を改善してください。
 
@@ -80,7 +88,6 @@ class ScriptAgent:
 
 フィードバックを踏まえて改善した台本を作成してください。台本形式は元の形式を維持してください。
 """
-        )
     
     def _load_sample_scripts(self) -> List[str]:
         """サンプル台本の読み込み"""
@@ -144,30 +151,69 @@ class ScriptAgent:
         """
         
         # Claude APIで章構造を解析
-        response = self.client.messages.create(
-            model=self.model_name,
-            max_tokens=1500,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
+        try:
+            # Anthropicバージョンに応じてAPI呼び出し方法を変更
+            anthropic_ver = anthropic.__version__
+            
+            if hasattr(self.client, 'messages'):
+                # 新バージョン (0.18.x以降)
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=1500,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            else:
+                # 旧バージョン (0.7.0など)
+                response = self.client.completion(
+                    prompt=f"{anthropic.HUMAN_PROMPT} {prompt}{anthropic.AI_PROMPT}",
+                    model=self.model_name,
+                    max_tokens_to_sample=1500,
+                )
+                
+            print(f"章構造抽出API呼び出し成功: レスポンスタイプ={type(response)}")
+        except Exception as e:
+            print(f"章構造抽出API呼び出しエラー: {str(e)}")
+            traceback.print_exc()
+            raise
         
         # JSON部分を抽出
-        response_text = response.content[0].text
-        json_start = response_text.find('[')
-        json_end = response_text.rfind(']') + 1
-        
-        if json_start >= 0 and json_end > json_start:
-            try:
-                json_str = response_text[json_start:json_end]
-                chapters = json.loads(json_str)
-                return chapters
-            except json.JSONDecodeError:
-                # JSON解析に失敗した場合は空リストを返す
-                print("JSON解析エラー:", response_text)
+        try:
+            # レスポンス形式の違いを吸収
+            response_text = ""
+            if hasattr(response, 'content'):
+                # 新バージョン
+                response_text = response.content[0].text
+            else:
+                # 古いバージョン (0.7.0)
+                response_text = response.completion
+                
+            print(f"APIレスポンス: {response_text[:100]}...")  # 最初の100文字だけログ出力
+            
+            json_start = response_text.find('[')
+            json_end = response_text.rfind(']') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                try:
+                    json_str = response_text[json_start:json_end]
+                    print(f"抽出されたJSON文字列: {json_str[:100]}...")
+                    
+                    chapters = json.loads(json_str)
+                    print(f"抽出された章の数: {len(chapters)}")
+                    return chapters
+                except json.JSONDecodeError as e:
+                    # JSON解析に失敗した場合は空リストを返す
+                    print(f"JSON解析エラー: {str(e)}")
+                    print(f"問題のJSON文字列: {json_str}")
+                    return []
+            else:
+                print("JSON形式が見つかりません。APIレスポンス全文:")
+                print(response_text)
                 return []
-        else:
-            print("JSON形式が見つかりません:", response_text)
+        except Exception as e:
+            print(f"レスポンス処理中のエラー: {str(e)}")
+            traceback.print_exc()
             return []
     
     def generate_script_for_chapter(self, chapter: Dict[str, str]) -> ChapterScript:
@@ -183,24 +229,44 @@ class ScriptAgent:
         sample_scripts = self._load_sample_scripts()
         sample_script_text = "\n".join(sample_scripts)
         
-        # プロンプトを準備
-        prompt_inputs = {
-            "chapter_title": chapter["chapter_title"],
-            "chapter_summary": chapter["chapter_summary"],
-            "sample_script": sample_script_text
-        }
-        
-        # 台本生成
-        prompt = self.script_prompt.format(**prompt_inputs)
-        response = self.client.messages.create(
-            model=self.model_name,
-            max_tokens=2000,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+        # プロンプト文字列を準備
+        prompt = self.script_prompt.format(
+            chapter_title=chapter["chapter_title"],
+            chapter_summary=chapter["chapter_summary"],
+            sample_script=sample_script_text
         )
         
-        script_content = response.content[0].text
+        # 台本生成 - Anthropicバージョンに応じてAPI呼び出し
+        try:
+            if hasattr(self.client, 'messages'):
+                # 新バージョン (0.18.x以降)
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=2000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            else:
+                # 旧バージョン (0.7.0など)
+                response = self.client.completion(
+                    prompt=f"{anthropic.HUMAN_PROMPT} {prompt}{anthropic.AI_PROMPT}",
+                    model=self.model_name,
+                    max_tokens_to_sample=2000,
+                )
+        except Exception as e:
+            print(f"台本生成API呼び出しエラー: {str(e)}")
+            traceback.print_exc()
+            raise
+        
+        # レスポンス形式の違いを吸収
+        script_content = ""
+        if hasattr(response, 'content'):
+            # 新バージョン
+            script_content = response.content[0].text
+        else:
+            # 古いバージョン (0.7.0)
+            script_content = response.completion
         
         # 台本オブジェクトを作成
         return ChapterScript(
@@ -220,23 +286,43 @@ class ScriptAgent:
         Returns:
             改善された台本
         """
-        # プロンプトを準備
-        prompt_inputs = {
-            "script_content": script.script_content,
-            "feedback": feedback
-        }
-        
-        # 台本改善
-        prompt = self.feedback_analysis_prompt.format(**prompt_inputs)
-        response = self.client.messages.create(
-            model=self.model_name,
-            max_tokens=2000,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+        # プロンプト文字列を準備
+        prompt = self.feedback_analysis_prompt.format(
+            script_content=script.script_content,
+            feedback=feedback
         )
         
-        improved_script = response.content[0].text
+        # 台本改善 - Anthropicバージョンに応じてAPI呼び出し
+        try:
+            if hasattr(self.client, 'messages'):
+                # 新バージョン (0.18.x以降)
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=2000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            else:
+                # 旧バージョン (0.7.0など)
+                response = self.client.completion(
+                    prompt=f"{anthropic.HUMAN_PROMPT} {prompt}{anthropic.AI_PROMPT}",
+                    model=self.model_name,
+                    max_tokens_to_sample=2000,
+                )
+        except Exception as e:
+            print(f"台本改善API呼び出しエラー: {str(e)}")
+            traceback.print_exc()
+            raise
+        
+        # レスポンス形式の違いを吸収
+        improved_script = ""
+        if hasattr(response, 'content'):
+            # 新バージョン
+            improved_script = response.content[0].text
+        else:
+            # 古いバージョン (0.7.0)
+            improved_script = response.completion
         
         # 改善された台本オブジェクトを作成（元の情報を維持）
         new_script = ChapterScript(
@@ -280,16 +366,37 @@ class ScriptAgent:
 改善点があれば具体的に指摘してください。
         """
         
-        # 品質分析を実行
-        response = self.client.messages.create(
-            model=self.model_name,
-            max_tokens=1000,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
+        # 品質分析を実行 - Anthropicバージョンに応じてAPI呼び出し
+        try:
+            if hasattr(self.client, 'messages'):
+                # 新バージョン (0.18.x以降)
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=1000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            else:
+                # 旧バージョン (0.7.0など)
+                response = self.client.completion(
+                    prompt=f"{anthropic.HUMAN_PROMPT} {prompt}{anthropic.AI_PROMPT}",
+                    model=self.model_name,
+                    max_tokens_to_sample=1000,
+                )
+        except Exception as e:
+            print(f"品質分析API呼び出しエラー: {str(e)}")
+            traceback.print_exc()
+            raise
         
-        analysis = response.content[0].text
+        # レスポンス形式の違いを吸収
+        analysis = ""
+        if hasattr(response, 'content'):
+            # 新バージョン
+            analysis = response.content[0].text
+        else:
+            # 古いバージョン (0.7.0)
+            analysis = response.completion
         
         # 「はい」または「いいえ」を抽出
         if "はい" in analysis[:50]:
@@ -308,13 +415,26 @@ class ScriptAgent:
         Returns:
             生成された台本のリスト
         """
-        # 章の抽出
-        chapters = self.extract_chapters(analysis_text)
-        
-        # 各章の台本を生成
-        scripts = []
-        for chapter in chapters:
-            script = self.generate_script_for_chapter(chapter)
-            scripts.append(script)
-        
-        return scripts
+        try:
+            # 章の抽出
+            chapters = self.extract_chapters(analysis_text)
+            
+            if not chapters:
+                print("警告: 章が抽出されませんでした")
+                return []
+                
+            # 各章の台本を生成
+            scripts = []
+            for chapter in chapters:
+                try:
+                    script = self.generate_script_for_chapter(chapter)
+                    scripts.append(script)
+                except Exception as e:
+                    print(f"章 '{chapter.get('chapter_title', '不明')}' の台本生成エラー: {str(e)}")
+                    traceback.print_exc()
+                    
+            return scripts
+        except Exception as e:
+            print(f"台本一括生成エラー: {str(e)}")
+            traceback.print_exc()
+            return []

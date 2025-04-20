@@ -2,6 +2,7 @@ import os
 import time
 import tempfile
 import json
+import logging
 from flask import (
     Flask,
     request,
@@ -12,8 +13,14 @@ from flask import (
     session,
 )
 from flask_cors import CORS
-from src.claude3_video_analyzer import VideoAnalyzer
+from src.claude3_video_analyzer import VideoAnalyzer, ScriptGenerator
 from goose_lib.api import goose_bp
+
+# ロギング設定
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
@@ -36,6 +43,10 @@ load_dotenv()  # 明示的に.envを読み込む
 try:
     analyzer = VideoAnalyzer()
     print(f"モード: {analyzer.mode}, Bedrock使用: {analyzer.use_bedrock}")
+    
+    # ScriptGeneratorインスタンスの作成
+    script_generator = ScriptGenerator(analyzer)
+    print("台本生成エンジンの初期化が完了しました")
 except Exception as e:
     print(f"初期化エラー: {str(e)}")
     raise
@@ -332,6 +343,240 @@ def serve_static(path):
     """静的ファイルを提供"""
     return send_from_directory("static", path)
 
+
+# 台本生成API
+@app.route("/api/bedrock-scripts/analyze-chapters", methods=["POST"])
+def bedrock_analyze_chapters():
+    """章立て解析結果から各章を抽出するAPI（Bedrock版）"""
+    data = request.json
+    if not data or 'analysis_text' not in data:
+        return jsonify({"error": "解析テキストが提供されていません"}), 400
+        
+    analysis_text = data['analysis_text']
+    
+    try:
+        # 章の抽出
+        chapters = script_generator.extract_chapters(analysis_text)
+        
+        # セッションに保存
+        session['chapters'] = chapters
+        
+        return jsonify({
+            "success": True,
+            "chapters": chapters
+        })
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"章構造抽出エラー: {str(e)}")
+        print(f"トレースバック: {error_traceback}")
+        return jsonify({"error": f"章構造の抽出に失敗しました: {str(e)}"}), 500
+
+
+@app.route("/api/bedrock-scripts/generate-script", methods=["POST"])
+def bedrock_generate_script():
+    """特定の章の台本を生成するAPI（Bedrock版）"""
+    data = request.json
+    if not data or 'chapter_index' not in data:
+        return jsonify({"error": "章のインデックスが指定されていません"}), 400
+        
+    chapter_index = data['chapter_index']
+    
+    # 章情報の取得
+    chapters = data.get('chapters')
+    if not chapters:
+        chapters = session.get('chapters')
+    
+    if not chapters or chapter_index >= len(chapters):
+        return jsonify({"error": "指定された章が見つかりません"}), 404
+        
+    chapter = chapters[chapter_index]
+    
+    try:
+        # 台本生成
+        script_data = script_generator.generate_script_for_chapter(chapter)
+        
+        # 台本を保存（セッションストアから取得）
+        scripts = session.get('scripts', [])
+        if chapter_index >= len(scripts):
+            # 新しい章の台本を追加
+            scripts.append(script_data)
+        else:
+            # 既存の章の台本を更新
+            scripts[chapter_index] = script_data
+        session['scripts'] = scripts
+        
+        return jsonify({
+            "success": True,
+            "script": script_data,
+            "chapter_index": chapter_index
+        })
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"台本生成エラー: {str(e)}")
+        print(f"トレースバック: {error_traceback}")
+        return jsonify({"error": f"台本生成に失敗しました: {str(e)}"}), 500
+
+
+@app.route("/api/bedrock-scripts/analyze-script", methods=["POST"])
+def bedrock_analyze_script():
+    """台本の品質を分析するAPI（Bedrock版）"""
+    data = request.json
+    if not data or 'chapter_index' not in data:
+        return jsonify({"error": "章のインデックスが指定されていません"}), 400
+        
+    chapter_index = data['chapter_index']
+    script_content = data.get('script_content')
+    
+    # 台本の取得
+    scripts = session.get('scripts', [])
+    if chapter_index >= len(scripts):
+        return jsonify({"error": "指定された章の台本が見つかりません"}), 404
+    
+    script_data = scripts[chapter_index]
+    
+    # script_contentが指定された場合は、台本内容を更新
+    if script_content:
+        script_data['script_content'] = script_content
+        scripts[chapter_index] = script_data
+        session['scripts'] = scripts
+    
+    try:
+        # 品質分析
+        analysis_result = script_generator.analyze_script_quality(script_data)
+        
+        # 分析結果を保存
+        script_data['analysis'] = analysis_result['analysis']
+        script_data['passed'] = analysis_result['passed']
+        scripts[chapter_index] = script_data
+        session['scripts'] = scripts
+        
+        return jsonify({
+            "success": True,
+            "passed": analysis_result['passed'],
+            "analysis": analysis_result['analysis'],
+            "chapter_index": chapter_index
+        })
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"台本分析エラー: {str(e)}")
+        print(f"トレースバック: {error_traceback}")
+        return jsonify({"error": f"台本分析に失敗しました: {str(e)}"}), 500
+
+
+@app.route("/api/bedrock-scripts/submit-feedback", methods=["POST"])
+def bedrock_submit_feedback():
+    """台本にフィードバックを送信するAPI（Bedrock版）"""
+    data = request.json
+    if not data or 'chapter_index' not in data or 'feedback' not in data or 'is_approved' not in data:
+        return jsonify({"error": "必須パラメータが不足しています"}), 400
+    
+    chapter_index = data['chapter_index']
+    feedback_text = data['feedback']
+    is_approved = data['is_approved']
+    
+    # 台本の取得
+    scripts = session.get('scripts', [])
+    if chapter_index >= len(scripts):
+        return jsonify({"error": "指定された章の台本が見つかりません"}), 404
+    
+    script_data = scripts[chapter_index]
+    
+    try:
+        # フィードバックの処理
+        if is_approved:
+            # 承認の場合
+            script_data['status'] = "approved"
+        else:
+            # フィードバックの場合
+            script_data['status'] = "rejected"
+            if 'feedback' not in script_data:
+                script_data['feedback'] = []
+            script_data['feedback'].append(feedback_text)
+            
+            # フィードバックに基づいて台本を改善
+            improved_script_data = script_generator.improve_script(script_data, feedback_text)
+            script_data['improved_script'] = improved_script_data['script_content']
+        
+        # 変更を保存
+        scripts[chapter_index] = script_data
+        session['scripts'] = scripts
+        
+        return jsonify({
+            "success": True,
+            "chapter_index": chapter_index,
+            "is_approved": is_approved,
+            "improved_script": script_data.get('improved_script', None) if not is_approved else None
+        })
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"フィードバック処理エラー: {str(e)}")
+        print(f"トレースバック: {error_traceback}")
+        return jsonify({"error": f"フィードバック処理に失敗しました: {str(e)}"}), 500
+
+
+@app.route("/api/bedrock-scripts/apply-improvement", methods=["POST"])
+def bedrock_apply_improvement():
+    """改善された台本を適用するAPI（Bedrock版）"""
+    data = request.json
+    if not data or 'chapter_index' not in data:
+        return jsonify({"error": "章のインデックスが指定されていません"}), 400
+        
+    chapter_index = data['chapter_index']
+    
+    # 台本の取得
+    scripts = session.get('scripts', [])
+    if chapter_index >= len(scripts):
+        return jsonify({"error": "指定された章の台本が見つかりません"}), 404
+    
+    script_data = scripts[chapter_index]
+    if 'improved_script' not in script_data:
+        return jsonify({"error": "改善された台本がありません"}), 400
+    
+    try:
+        # 改善された台本を適用
+        script_data['script_content'] = script_data['improved_script']
+        script_data['status'] = "review"
+        del script_data['improved_script']
+        
+        # 変更を保存
+        scripts[chapter_index] = script_data
+        session['scripts'] = scripts
+        
+        return jsonify({
+            "success": True,
+            "chapter_index": chapter_index,
+            "script": script_data
+        })
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"台本改善適用エラー: {str(e)}")
+        print(f"トレースバック: {error_traceback}")
+        return jsonify({"error": f"台本改善の適用に失敗しました: {str(e)}"}), 500
+
+
+@app.route("/api/bedrock-scripts/get-all-scripts", methods=["GET"])
+def bedrock_get_all_scripts():
+    """すべての台本を取得するAPI（Bedrock版）"""
+    scripts = session.get('scripts', [])
+    return jsonify({
+        "success": True,
+        "scripts": scripts
+    })
+
+
+# エラーハンドリング
+@app.errorhandler(500)
+def internal_server_error(error):
+    logging.error(f"500エラー: {error}")
+    return jsonify({
+        "error": "サーバー内部エラーが発生しました",
+        "details": str(error)
+    }), 500
 
 if __name__ == "__main__":
     # クエリ文字列で直接実行をサポート

@@ -121,6 +121,8 @@ document.addEventListener('DOMContentLoaded', () => {
     analyzeButton.addEventListener('click', startAnalysis);
 
     function startAnalysis() {
+        // 台本生成ボタンを初期状態では非表示に
+        generateScriptsButton.classList.add('hidden');
         if (!selectedFile) return;
 
         // 解析開始前の表示更新
@@ -201,6 +203,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                 // 完了処理
                                 loading.classList.add('hidden');
                                 analyzeButton.disabled = false;
+                                
+                                // 章立て解析完了時に台本生成ボタンを表示
+                                if (currentAnalyzeType === 'chapters') {
+                                    generateScriptsButton.classList.remove('hidden');
+                                    analysisText = resultsContent.innerText;
+                                    console.log('章立て解析完了: 台本生成ボタンを表示');
+                                }
                             }
                         } catch (e) {
                             console.error('SSEパースエラー:', e, line);
@@ -247,9 +256,12 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsSection.classList.add('hidden');
         resultsContent.innerHTML = '';
         scriptEditorSection.style.display = 'none';
+        // 台本生成ボタンも非表示に
+        generateScriptsButton.classList.add('hidden');
     });
     
-    // 章立て解析後に台本生成ボタンを表示する
+    // この関数は直接使わなくなりました - コメントアウトして参考として残しておく
+    /*
     function showScriptGenerationOption() {
         if (currentAnalyzeType === 'chapters') {
             // 章立て解析の場合のみ、台本生成ボタンを表示
@@ -260,11 +272,12 @@ document.addEventListener('DOMContentLoaded', () => {
             generateScriptsButton.classList.add('hidden');
         }
     }
+    */
     
     // 台本生成ボタン
     generateScriptsButton.addEventListener('click', () => {
         // 解析テキストから章構造を抽出するAPIを呼び出す
-        fetch('/api/goose/analyze-chapters', {
+        fetch('/api/bedrock-scripts/analyze-chapters', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -278,6 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.success) {
                 // 章情報を保存
                 chapters = data.chapters;
+                console.log("章構造の抽出成功:", chapters);
                 
                 // 台本エディタUIを表示
                 setupScriptEditor();
@@ -428,7 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
         scriptTextarea.value = '台本を生成中...';
         scriptTextarea.disabled = true;
         
-        fetch('/api/goose/generate-script', {
+        fetch('/api/bedrock-scripts/generate-script', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -476,7 +490,7 @@ document.addEventListener('DOMContentLoaded', () => {
         analysisResult.textContent = '台本を分析中...';
         analysisResult.classList.remove('hidden');
         
-        fetch('/api/goose/analyze-script', {
+        fetch('/api/bedrock-scripts/analyze-script', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -521,7 +535,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // フィードバックを取得（空でも可）
         const feedbackText = feedbackTextarea.value || '承認しました。';
         
-        fetch('/api/goose/submit-feedback', {
+        fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -567,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        fetch('/api/goose/submit-feedback', {
+        fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -616,7 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
     applyImprovementButton.addEventListener('click', () => {
         if (currentChapterIndex < 0) return;
         
-        fetch('/api/goose/apply-improvement', {
+        fetch('/api/bedrock-scripts/apply-improvement', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -644,7 +658,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
     
-    // 解析完了時に台本生成オプションを表示
+    // showScriptGenerationOption関数は不要になりました
+    // 元のコードは削除または無効化します
+    /*
     const originalStartAnalysis = startAnalysis;
     startAnalysis = function() {
         originalStartAnalysis();
@@ -654,4 +670,5 @@ document.addEventListener('DOMContentLoaded', () => {
             showScriptGenerationOption();
         }, 1000);
     };
+    */
 });

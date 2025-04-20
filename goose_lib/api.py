@@ -73,7 +73,11 @@ def analyze_chapters():
             "chapters": chapters
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"章構造抽出エラー: {str(e)}")
+        print(f"トレースバック: {error_traceback}")
+        return jsonify({"error": f"章構造の抽出に失敗しました: {str(e)}"}), 500
 
 
 @goose_bp.route('/generate-script', methods=['POST'])
@@ -107,24 +111,31 @@ def generate_script():
         # ScriptAgentのインスタンス作成
         agent = ScriptAgent()
         
-        # 台本生成
-        script = agent.generate_script_for_chapter(chapter)
-        
-        # 台本を保存
-        scripts = _get_scripts()
-        if chapter_index >= len(scripts):
-            # 新しい章の台本を追加
-            scripts.append(script.to_dict())
-        else:
-            # 既存の章の台本を更新
-            scripts[chapter_index] = script.to_dict()
-        _save_scripts(scripts)
-        
-        return jsonify({
-            "success": True,
-            "script": script.to_dict(),
-            "chapter_index": chapter_index
-        })
+        try:
+            # 台本生成
+            script = agent.generate_script_for_chapter(chapter)
+            
+            # 台本を保存
+            scripts = _get_scripts()
+            if chapter_index >= len(scripts):
+                # 新しい章の台本を追加
+                scripts.append(script.to_dict())
+            else:
+                # 既存の章の台本を更新
+                scripts[chapter_index] = script.to_dict()
+            _save_scripts(scripts)
+            
+            return jsonify({
+                "success": True,
+                "script": script.to_dict(),
+                "chapter_index": chapter_index
+            })
+        except Exception as e:
+            import traceback
+            error_traceback = traceback.format_exc()
+            print(f"台本生成エラー: {str(e)}")
+            print(f"トレースバック: {error_traceback}")
+            return jsonify({"error": f"台本生成に失敗しました: {str(e)}"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -4,10 +4,292 @@ import cv2
 import os
 import boto3
 import json
+import logging
+from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
+
+# ロガー設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # 環境変数の読み込み
 load_dotenv()
+
+
+class ScriptGenerator:
+    """台本生成のためのクラス"""
+    
+    def __init__(self, analyzer):
+        """初期化
+        
+        Args:
+            analyzer: VideoAnalyzerインスタンス
+        """
+        self.analyzer = analyzer
+        self.script_prompt = analyzer.default_script_prompt
+    
+    def extract_chapters(self, analysis_text: str) -> List[Dict[str, str]]:
+        """章立て解析結果から各章の情報を抽出する
+        
+        Args:
+            analysis_text: 章立て解析結果のテキスト
+            
+        Returns:
+            章情報のリスト（タイトルと概要）
+        """
+        logger.info("章構造の抽出を開始")
+        chapters = []
+        
+        # 単純なテキスト解析でMarkdown形式から章を抽出
+        try:
+            lines = analysis_text.split('\n')
+            current_chapter = None
+            
+            for line in lines:
+                # 章タイトルの検出 (## から始まる行)
+                if line.startswith('## '):
+                    if current_chapter:
+                        chapters.append(current_chapter)
+                    
+                    chapter_title = line.replace('## ', '').strip()
+                    current_chapter = {
+                        "chapter_num": len(chapters) + 1,
+                        "chapter_title": chapter_title,
+                        "chapter_summary": ""
+                    }
+                # 章の内容を蓄積
+                elif current_chapter and line and not line.startswith('#'):
+                    if current_chapter["chapter_summary"]:
+                        current_chapter["chapter_summary"] += "\n" + line
+                    else:
+                        current_chapter["chapter_summary"] = line
+            
+            # 最後の章を追加
+            if current_chapter:
+                chapters.append(current_chapter)
+                
+            logger.info(f"章構造の抽出が完了しました（{len(chapters)}章）")
+        except Exception as e:
+            logger.error(f"章構造の抽出中にエラーが発生: {str(e)}")
+            raise
+            
+        return chapters
+    
+    def generate_script_for_chapter(self, chapter: Dict[str, str]) -> Dict[str, str]:
+        """各章の台本を生成
+        
+        Args:
+            chapter: 章情報（タイトルと概要を含む辞書）
+            
+        Returns:
+            生成された台本
+        """
+        logger.info(f"章「{chapter['chapter_title']}」の台本生成を開始")
+        
+        # プロンプト生成
+        prompt = self.script_prompt.format(
+            chapter_title=chapter["chapter_title"],
+            chapter_summary=chapter["chapter_summary"]
+        )
+        
+        # Bedrockモードの場合はBedrockを使用
+        if self.analyzer.use_bedrock:
+            try:
+                # Bedrockモデル呼び出し
+                response = self.analyzer.bedrock_runtime.invoke_model(
+                    modelId=self.analyzer.model,
+                    body=json.dumps({
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 2000,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ]
+                    })
+                )
+                
+                # レスポンスの解析
+                response_body = json.loads(response.get('body').read())
+                script_content = response_body['content'][0]['text']
+                
+                logger.info(f"章「{chapter['chapter_title']}」の台本生成が完了")
+            except Exception as e:
+                logger.error(f"台本生成中にエラーが発生: {str(e)}")
+                raise
+        else:
+            # Anthropic APIの場合
+            try:
+                response = self.analyzer.client.messages.create(
+                    model=self.analyzer.model,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                script_content = response.content[0].text
+                logger.info(f"章「{chapter['chapter_title']}」の台本生成が完了")
+            except Exception as e:
+                logger.error(f"台本生成中にエラーが発生: {str(e)}")
+                raise
+        
+        # 台本データの作成
+        script_data = {
+            "chapter_title": chapter["chapter_title"],
+            "chapter_summary": chapter["chapter_summary"],
+            "script_content": script_content,
+            "status": "review",
+            "feedback": []
+        }
+        
+        return script_data
+        
+    def analyze_script_quality(self, script_data: Dict[str, str]) -> Dict[str, Any]:
+        """台本の品質を分析する
+        
+        Args:
+            script_data: 分析する台本データ
+            
+        Returns:
+            分析結果
+        """
+        logger.info(f"台本「{script_data['chapter_title']}」の品質分析を開始")
+        
+        # 分析用のプロンプト
+        prompt = f"""
+以下のゆっくり不動産の台本を分析し、その品質を評価してください。
+
+# 章タイトル
+{script_data['chapter_title']}
+
+# 章の概要
+{script_data['chapter_summary']}
+
+# 台本
+{script_data['script_content']}
+
+以下の基準で評価してください：
+1. ゆっくり実況の口調になっているか
+2. 専門用語が適切に説明されているか
+3. 重要なポイントが強調されているか
+4. 具体的なアドバイスが含まれているか
+5. 台本形式が適切か（「台詞:」で話者を示しているか）
+
+この台本が基準を満たしていると思いますか？「はい」または「いいえ」で答え、その理由を具体的に説明してください。
+改善点があれば具体的に指摘してください。
+        """
+        
+        # Bedrockモードの場合はBedrockを使用
+        if self.analyzer.use_bedrock:
+            try:
+                # Bedrockモデル呼び出し
+                response = self.analyzer.bedrock_runtime.invoke_model(
+                    modelId=self.analyzer.model,
+                    body=json.dumps({
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 1000,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ]
+                    })
+                )
+                
+                # レスポンスの解析
+                response_body = json.loads(response.get('body').read())
+                analysis = response_body['content'][0]['text']
+                
+                # 「はい」または「いいえ」を抽出
+                passed = "はい" in analysis[:50]
+                
+                logger.info(f"台本「{script_data['chapter_title']}」の品質分析が完了")
+            except Exception as e:
+                logger.error(f"台本品質分析中にエラーが発生: {str(e)}")
+                raise
+        else:
+            # Anthropic APIの場合
+            try:
+                response = self.analyzer.client.messages.create(
+                    model=self.analyzer.model,
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                analysis = response.content[0].text
+                passed = "はい" in analysis[:50]
+                logger.info(f"台本「{script_data['chapter_title']}」の品質分析が完了")
+            except Exception as e:
+                logger.error(f"台本品質分析中にエラーが発生: {str(e)}")
+                raise
+        
+        return {
+            "passed": passed,
+            "analysis": analysis
+        }
+    
+    def improve_script(self, script_data: Dict[str, str], feedback: str) -> Dict[str, str]:
+        """フィードバックに基づいて台本を改善する
+        
+        Args:
+            script_data: 改善する台本データ
+            feedback: フィードバック内容
+            
+        Returns:
+            改善された台本
+        """
+        logger.info(f"台本「{script_data['chapter_title']}」の改善を開始")
+        
+        # 改善用のプロンプト
+        prompt = f"""
+あなたは不動産の解説動画「ゆっくり不動産」の台本編集アシスタントです。
+以下の台本とフィードバックに基づいて、台本を改善してください。
+
+# 現在の台本
+{script_data['script_content']}
+
+# フィードバック
+{feedback}
+
+フィードバックを踏まえて改善した台本を作成してください。台本形式は元の形式を維持してください。
+        """
+        
+        # Bedrockモードの場合はBedrockを使用
+        if self.analyzer.use_bedrock:
+            try:
+                # Bedrockモデル呼び出し
+                response = self.analyzer.bedrock_runtime.invoke_model(
+                    modelId=self.analyzer.model,
+                    body=json.dumps({
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 2000,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ]
+                    })
+                )
+                
+                # レスポンスの解析
+                response_body = json.loads(response.get('body').read())
+                improved_script = response_body['content'][0]['text']
+                
+                logger.info(f"台本「{script_data['chapter_title']}」の改善が完了")
+            except Exception as e:
+                logger.error(f"台本改善中にエラーが発生: {str(e)}")
+                raise
+        else:
+            # Anthropic APIの場合
+            try:
+                response = self.analyzer.client.messages.create(
+                    model=self.analyzer.model,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                improved_script = response.content[0].text
+                logger.info(f"台本「{script_data['chapter_title']}」の改善が完了")
+            except Exception as e:
+                logger.error(f"台本改善中にエラーが発生: {str(e)}")
+                raise
+        
+        # 元の台本データをコピー
+        improved_script_data = script_data.copy()
+        improved_script_data["script_content"] = improved_script
+        improved_script_data["status"] = "review"
+        
+        return improved_script_data
 
 
 class VideoAnalyzer:
@@ -15,6 +297,8 @@ class VideoAnalyzer:
         # モードを取得
         self.mode = os.getenv("MODE", "anthropic")  # デフォルトはAnthropicクライアント
         self.use_bedrock = False
+        self.bedrock_client = None
+        self.bedrock_agent_client = None  # Bedrock Agent用クライアント
 
         # Anthropicクライアント用の設定
         if self.mode == "anthropic":
@@ -51,8 +335,16 @@ class VideoAnalyzer:
                 self.bedrock_runtime = boto3_session.client(
                     service_name="bedrock-runtime",
                 )
+                
+                # Bedrock Agentクライアントの作成
+                self.bedrock_agent_client = boto3_session.client(
+                    service_name="bedrock-agent-runtime",
+                )
+                
+                logger.info("Bedrock Agentクライアントの初期化に成功しました")
                 self.use_bedrock = True
             except Exception as e:
+                logger.error(f"Bedrockクライアントの初期化エラー: {str(e)}")
                 raise ConnectionError(f"Bedrockクライアントの初期化エラー: {str(e)}")
         else:
             raise ValueError(
@@ -81,6 +373,29 @@ class VideoAnalyzer:
 
         # 章立て解析用のデフォルトプロンプト
         self.default_chapters_prompt = "これは動画のフレーム画像です。以下の形式で動画を章立てして解説してください。\n\n【形式】\n# 動画の概要\n（50-100文字程度で動画全体の概要を簡潔に説明）\n\n## 章1：タイトル\n（章の内容を説明）\n\n## 章2：タイトル\n（章の内容を説明）\n\n（必要に応じて章を追加）\n\n# まとめ\n（動画全体のポイントを簡潔にまとめる）"
+        
+        # Bedrock Agent用のパラメータ
+        self.bedrock_agent_id = os.getenv("BEDROCK_AGENT_ID")
+        self.bedrock_agent_alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
+        
+        # 台本生成用のデフォルトプロンプト
+        self.default_script_prompt = """あなたは不動産の解説動画「ゆっくり不動産」の台本作成専門のAIアシスタントです。
+以下の章タイトルと概要に基づいて、ゆっくり不動産の台本を作成してください。
+
+# 章タイトル
+{chapter_title}
+
+# 章の概要
+{chapter_summary}
+
+以下の点に注意して台本を作成してください：
+1. ゆっくり実況の口調で書く（「～です」「～ます」調）
+2. 専門用語は噛み砕いて説明する
+3. 重要なポイントは繰り返して強調する
+4. 読者が実際に行動できる具体的なアドバイスを含める
+5. 台本形式は「台詞:」で話者を示し、その後に台詞内容を記載する
+
+台本を作成してください："""
 
     def get_frames_from_video(self, file_path, max_images=20):
         """ビデオからフレームを抽出してbase64にエンコード"""
