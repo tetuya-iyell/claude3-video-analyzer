@@ -77,8 +77,11 @@ def main():
     logger.info(f"AWS Region: {aws_region}")
     
     # 指定されたエージェントIDとエイリアスID
-    target_agent_id = "MJAORXUJ01"
-    target_alias_id = "M84J9HHVUS"
+    target_agent_id = "QKIWJP7RL9"  # my-simple-agent
+    target_alias_id = "HMJDNE7YDR"  # prod-alias
+    
+    # AWS リージョンを us-east-1 に設定（エンドポイントが利用可能な可能性があるため）
+    aws_region = "us-east-1"
     
     if not agent_id:
         agent_id = target_agent_id
@@ -90,11 +93,18 @@ def main():
 
     # セッションの作成
     try:
+        aws_access_key = "AKIAXYTL6D6HUXSXERGJ"
+        aws_secret_key = "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"
+        
+        # 直接指定された認証情報を使用
         session = boto3.Session(
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
             region_name=aws_region
         )
+        
+        # 接続先エンドポイントを表示
+        logger.info(f"利用可能なエンドポイント: {boto3.Session().get_available_regions('bedrock-agent-runtime')}")
         
         # Bedrock Agent Runtimeクライアントの作成
         agent_client = session.client(service_name="bedrock-agent-runtime")
@@ -174,99 +184,87 @@ def main():
             logger.info(f"直接応答オブジェクト: {type(direct_response)}")
             # 使用可能なメソッドを出力
             logger.info(f"応答メソッド: {[m for m in dir(direct_response) if not m.startswith('_')]}")
+            
+            # 応答の内容を詳細に表示
+            logger.info(f"応答キー: {direct_response.keys()}")
+            if 'completion' in direct_response:
+                logger.info(f"完了テキスト: {direct_response['completion'][:200]}")
+            if 'contentType' in direct_response:
+                logger.info(f"コンテンツタイプ: {direct_response['contentType']}")
+            if 'sessionId' in direct_response:
+                logger.info(f"セッションID: {direct_response['sessionId']}")
         except Exception as e:
             logger.error(f"代替呼び出しエラー: {e}")
         
         logger.info("レスポンスの処理を開始...")
         
-        # レスポンスの処理 (EventStream)
+        # レスポンス型の診断
+        logger.info(f"レスポンス型詳細チェック: {type(response)}")
+        # レスポンスを文字列として初期化
         full_response = ""
         extracted_completion = ""
-        i = 0
-        for event in response:
-            i += 1
-            event_type = type(event).__name__
-            logger.info(f"イベント #{i} タイプ: {event_type}")
+        
+        # Boto3のEventStreamレスポンスかどうかチェック
+        try:
+            if hasattr(response, "get_available_events"):
+                logger.info("Boto3 EventStreamレスポンス検出")
+                full_response = str(response)
+            elif isinstance(response, dict):
+                logger.info("辞書型レスポンスを処理")
+                logger.info(f"レスポンスキー: {response.keys()}")
+                
+                # 直接completion値を取得
+                if 'completion' in response:
+                    extracted_completion = response['completion']
+                    logger.info(f"completion値を抽出: {extracted_completion[:200] if extracted_completion else 'なし'}")
+                
+                full_response = str(response)
+            else:
+                logger.info(f"その他のレスポンス型: {str(response)[:200]}")
+                full_response = str(response)
+        except Exception as check_err:
+            logger.error(f"レスポンス型チェックエラー: {str(check_err)}")
+        
+        # EventStreamレスポンスのチェックと解析
+        if hasattr(response, "__iter__") and not isinstance(response, dict):
+            logger.info("EventStreamのようなイテラブルレスポンスの処理を開始")
+            stream_full_response = ""
+            stream_extracted_completion = ""
+            i = 0
             
-            # イベントの内容をそのまま表示
-            event_str = str(event)
-            logger.info(f"イベント内容: {event_str[:1000]}")
-            
-            # イベントがdictのようなら、その内容を表示
             try:
-                if isinstance(event, dict):
-                    logger.info(f"Dict内容: {json.dumps(event)[:500]}")
-                elif hasattr(event, '__dict__'):
-                    logger.info(f"オブジェクト属性: {event.__dict__}")
-            except:
-                pass
-                
-            # 文字列として応答を蓄積
-            full_response += event_str
-            
-            # システマティックにさまざまなパターンを試す
-            try:
-                # 1. オブジェクト属性アクセス - chunk.bytesパターン
-                if hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
-                    chunk_bytes = event.chunk.bytes
-                    logger.info(f"chunk.bytes パターン検出: {chunk_bytes[:50] if isinstance(chunk_bytes, bytes) else 'Not bytes'}")
+                for event in response:
+                    i += 1
+                    event_type = type(event).__name__
+                    logger.info(f"イベント #{i} タイプ: {event_type}")
                     
-                    # バイト列をJSONに変換
-                    if isinstance(chunk_bytes, bytes):
-                        chunk_data = json.loads(chunk_bytes.decode('utf-8'))
-                        logger.info(f"デコード成功: {json.dumps(chunk_data)[:200]}")
-                        
-                        # completionキーがあれば抽出
-                        if 'completion' in chunk_data:
-                            completion_text = chunk_data['completion']
-                            extracted_completion += completion_text
-                            logger.info(f"抽出されたcompletion: {completion_text}")
-                
-                # 2. 辞書アクセスパターン
-                if isinstance(event, dict) and 'chunk' in event:
-                    logger.info("辞書アクセスパターン検出")
-                    if 'bytes' in event['chunk']:
-                        chunk_bytes = event['chunk']['bytes']
-                        logger.info(f"チャンクデータ検出: {chunk_bytes[:100] if isinstance(chunk_bytes, (str, bytes)) else type(chunk_bytes)}")
-                        
-                        # バイト列または文字列をJSONに変換
-                        if isinstance(chunk_bytes, bytes):
-                            chunk_data = json.loads(chunk_bytes.decode('utf-8'))
-                        elif isinstance(chunk_bytes, str):
-                            chunk_data = json.loads(chunk_bytes)
-                        else:
-                            chunk_data = chunk_bytes
-                            
-                        logger.info(f"チャンクデータ解析: {json.dumps(chunk_data)[:200]}")
-                        
-                        # completionキーがあれば抽出
-                        if 'completion' in chunk_data:
-                            completion_text = chunk_data['completion']
-                            extracted_completion += completion_text
-                            logger.info(f"抽出されたcompletion: {completion_text}")
-                
-                # 3. completionプロパティを直接持つケース
-                if hasattr(event, 'completion'):
-                    completion_text = event.completion
-                    extracted_completion += completion_text
-                    logger.info(f"直接completionから抽出: {completion_text}")
-                
-                # 4. JSON文字列パターン
-                try:
-                    json_data = json.loads(event_str)
-                    logger.info(f"JSONパース成功: {json.dumps(json_data)[:200]}")
+                    # イベントの内容をそのまま表示
+                    event_str = str(event)
+                    logger.info(f"イベント内容: {event_str[:200]}")
                     
-                    # completionキーがあれば抽出
-                    if 'completion' in json_data:
-                        completion_text = json_data['completion']
-                        extracted_completion += completion_text
-                        logger.info(f"JSON文字列からcompletion抽出: {completion_text}")
-                except:
-                    pass
-            except Exception as e:
-                logger.error(f"イベント処理エラー: {str(e)}")
+                    # イベントがdictのようなら、その内容を表示
+                    try:
+                        if isinstance(event, dict):
+                            logger.info(f"Dict内容: {json.dumps(event)[:200]}")
+                            if 'completion' in event:
+                                completion_text = event['completion']
+                                stream_extracted_completion += completion_text
+                                logger.info(f"直接dictからcompletion抽出: {completion_text[:100]}")
+                    except Exception as dict_err:
+                        logger.error(f"辞書処理エラー: {str(dict_err)}")
+                    
+                    # 文字列として応答を蓄積
+                    stream_full_response += event_str
+                
+                # イベントストリームから抽出された結果があれば更新
+                if stream_extracted_completion:
+                    logger.info("イベントストリームから抽出されたテキストで更新")
+                    extracted_completion = stream_extracted_completion
+                    full_response = stream_full_response
+                    
+            except Exception as stream_err:
+                logger.error(f"EventStream処理エラー: {str(stream_err)}")
                 logger.exception("詳細:")
-                pass
                 
         logger.info("\n===== 最終応答 =====")
         logger.info(full_response or "応答がありません")

@@ -274,55 +274,28 @@ class ScriptGenerator:
 台本形式は元の形式を維持して、改善点を取り入れてください。
                         """
                         
-                        # Bedrock AI Agentの呼び出し - EventStreamを返す
-                        response_stream = self.analyzer.bedrock_agent_client.invoke_agent(
+                        # Bedrock AI Agentの呼び出し
+                        logger.info("Bedrock AI Agent直接APIを呼び出し中...")
+                        
+                        response = self.analyzer.bedrock_agent_client.invoke_agent(
                             agentId=self.analyzer.bedrock_agent_id,
                             agentAliasId=self.analyzer.bedrock_agent_alias_id,
                             sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
-                            inputText=input_text,
-                            enableTrace=True
+                            inputText=input_text
                         )
                         
-                        # EventStreamからレスポンスを処理
+                        logger.info(f"応答型: {type(response)}")
+                        logger.info(f"レスポンスキー: {response.keys() if isinstance(response, dict) else 'Not a dict'}")
+                        
+                        # 辞書型のレスポンスからcompletionを取得
                         improved_script = ""
                         try:
-                            logger.info("EventStreamからレスポンスを収集中...")
-                            logger.debug(f"response_stream type: {type(response_stream)}")
-                            
-                            # レスポンス処理
-                            for event in response_stream:
-                                # イベントタイプの確認
-                                logger.debug(f"イベントタイプ: {type(event)}")
+                            if isinstance(response, dict) and 'completion' in response:
+                                improved_script = response['completion']
+                                logger.info(f"完了テキストを取得: {improved_script[:100]}...")
+                            else:
+                                logger.warning("completion キーが見つかりません")
                                 
-                                # イベントを文字列として取得
-                                event_str = str(event)
-                                
-                                # Agent レスポンスを抽出するための処理
-                                if hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
-                                    # バイナリデータを抽出して処理
-                                    try:
-                                        chunk_data = json.loads(event.chunk.bytes.decode('utf-8'))
-                                        if 'completion' in chunk_data:
-                                            improved_script += chunk_data['completion']
-                                    except Exception as e:
-                                        logger.error(f"チャンクデータ処理エラー: {str(e)}")
-                                
-                                # 辞書形式の場合
-                                elif isinstance(event, dict) and 'chunk' in event:
-                                    try:
-                                        if 'bytes' in event['chunk']:
-                                            chunk_data = json.loads(event['chunk']['bytes'])
-                                            if 'completion' in chunk_data:
-                                                improved_script += chunk_data['completion']
-                                    except Exception as e:
-                                        logger.error(f"辞書チャンクデータ処理エラー: {str(e)}")
-                                
-                                # AgentCompletionイベントの処理
-                                elif hasattr(event, 'completion'):
-                                    improved_script += event.completion
-                            
-                            logger.info(f"Bedrock Agentからの応答テキスト: {improved_script[:200]}...")
-                            
                             # 結果が空の場合はフォールバック
                             if not improved_script.strip():
                                 logger.warning("Bedrock Agentからの応答が空です。標準モデルにフォールバックします。")
@@ -465,6 +438,8 @@ class VideoAnalyzer:
             # Bedrockクライアントの初期化
             try:
                 # AWS認証情報の設定を確認
+                # 明示的にus-east-1リージョンを使用
+                aws_region = "us-east-1"
                 boto3_session = boto3.Session(
                     aws_access_key_id=aws_access_key,
                     aws_secret_access_key=aws_secret_key,
@@ -476,9 +451,10 @@ class VideoAnalyzer:
                     service_name="bedrock-runtime",
                 )
                 
-                # Bedrock Agentクライアントの作成
+                # Bedrock Agentクライアントの作成 - リージョン指定を明示的に設定
                 self.bedrock_agent_client = boto3_session.client(
                     service_name="bedrock-agent-runtime",
+                    region_name="us-east-1",  # 明示的にus-east-1を指定
                 )
                 
                 logger.info("Bedrock Agentクライアントの初期化に成功しました")
