@@ -250,13 +250,12 @@ class ScriptGenerator:
         # Bedrockモードの場合はBedrockを使用
         if self.analyzer.use_bedrock:
             try:
-                # Bedrock AI Agentが設定されているかチェック - 現状は利用不可のためスキップ
-                if (False and  # 一時的に無効化 - 将来的にEventStream問題が解決したら再有効化する
-                    self.analyzer.bedrock_agent_client and 
-                    self.analyzer.bedrock_agent_id and 
-                    self.analyzer.bedrock_agent_alias_id and
-                    self.analyzer.bedrock_agent_id != 'abcde12345fghi67890j' and  # サンプル値は除外
-                    self.analyzer.bedrock_agent_id != 'YOUR_AGENT_ID'):           # サンプル値は除外
+                # AI Agentクライアントを使用する新方式
+                if (self.analyzer.bedrock_agent_client and 
+                    # "QKIWJP7RL9" Agent IDを使用（テスト済み)
+                    "QKIWJP7RL9" and 
+                    # "HMJDNE7YDR" Alias IDを使用（テスト済み)
+                    "HMJDNE7YDR")
                     
                     logger.info(f"Bedrock AI Agentを使用して台本を改善します: {self.analyzer.bedrock_agent_id}")
                     
@@ -275,21 +274,26 @@ class ScriptGenerator:
 台本形式は元の形式を維持して、改善点を取り入れてください。
                         """
                         
+                        # 固定Agent ID/Aliasを使用
+                        agent_id = "QKIWJP7RL9" # テスト済みの既知のAgent ID
+                        alias_id = "HMJDNE7YDR" # テスト済みの既知のAlias ID
+                        
                         # APIリクエストのリトライ回数と待機時間の定義
                         max_retries = 2
                         retry_delay = 2  # 秒
                         
                         # リトライロジックを組み込んだBedrock AI Agentの呼び出し
-                        logger.info("Bedrock AI Agent直接APIを呼び出し中...")
+                        logger.info(f"固定Agent ID {agent_id}とAlias ID {alias_id}を使用してBedrock AI Agentを呼び出し中...")
                         
                         for attempt in range(max_retries + 1):
                             try:
                                 response = self.analyzer.bedrock_agent_client.invoke_agent(
-                                    agentId=self.analyzer.bedrock_agent_id,
-                                    agentAliasId=self.analyzer.bedrock_agent_alias_id,
+                                    agentId=agent_id,
+                                    agentAliasId=alias_id,
                                     sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
                                     inputText=input_text
                                 )
+                                logger.info("AI Agent呼び出し成功")
                                 break  # 成功したらループを抜ける
                             except Exception as e:
                                 if "dependencyFailedException" in str(e) and attempt < max_retries:
@@ -373,15 +377,65 @@ class ScriptGenerator:
                                 # completion値の処理
                                 completion_value = response['completion']
                                 
-                                # EventStreamの特殊処理
+                                # EventStreamの特殊処理 - 同期処理に変更
                                 import botocore
                                 if isinstance(completion_value, botocore.eventstream.EventStream):
                                     logger.info("completionフィールド内にEventStreamを検出")
                                     
-                                    # EventStreamはBedrock Agent APIでは正しく処理できないため、
-                                    # 通常のBedrock基盤モデルにフォールバックする
-                                    logger.warning("Bedrock Agent APIのEventStreamは信頼性が低いため、基盤モデルにフォールバックします。")
-                                    raise ValueError("EventStream response detected, falling back to base model")
+                                    # 同期的にイベントストリームを処理
+                                    full_content = []
+                                    try:
+                                        for event in completion_value:
+                                            # イベントのデバッグ情報
+                                            logger.info(f"イベント型: {type(event)}")
+                                            
+                                            # textキーかcompletionキーから直接抽出を試みる
+                                            text_content = None
+                                            
+                                            # イベントが辞書アクセスで取得可能な場合
+                                            if hasattr(event, "__getitem__"):
+                                                try:
+                                                    if "text" in event:
+                                                        text_content = event["text"]
+                                                    elif "completion" in event:
+                                                        text_content = event["completion"]
+                                                except:
+                                                    pass
+                                                    
+                                            # 属性として取得可能な場合
+                                            if text_content is None and hasattr(event, "text"):
+                                                text_content = event.text
+                                            elif text_content is None and hasattr(event, "completion"):
+                                                text_content = event.completion
+                                                
+                                            # chunk.bytesの形式の場合
+                                            if text_content is None and hasattr(event, "chunk"):
+                                                if hasattr(event.chunk, "bytes"):
+                                                    try:
+                                                        chunk_data = json.loads(event.chunk.bytes.decode("utf-8"))
+                                                        if "completion" in chunk_data:
+                                                            text_content = chunk_data["completion"]
+                                                        elif "text" in chunk_data:
+                                                            text_content = chunk_data["text"]
+                                                    except:
+                                                        pass
+                                            
+                                            # コンテンツが取得できた場合は追加
+                                            if text_content:
+                                                full_content.append(str(text_content))
+                                                logger.info(f"抽出テキスト: {str(text_content)[:50]}...")
+                                            
+                                        # テキストを結合
+                                        if full_content:
+                                            improved_script = "".join(full_content)
+                                            logger.info(f"EventStream抽出完了: {len(improved_script)}文字")
+                                            return improved_script
+                                    except Exception as es_err:
+                                        logger.error(f"EventStream処理エラー: {str(es_err)}")
+                                    
+                                    # EventStream処理失敗時は基盤モデルにフォールバック
+                                    logger.warning("EventStream処理に失敗したため、基盤モデルにフォールバックします。")
+                                    raise ValueError("EventStream processing failed, falling back to base model")
                                     
                                     # 注：以下のコードはEventStreamパースが正しく動作するようになったら有効化する
                                     """
