@@ -250,12 +250,8 @@ class ScriptGenerator:
         # Bedrockモードの場合はBedrockを使用
         if self.analyzer.use_bedrock:
             try:
-                # AI Agentクライアントを使用する新方式
-                if (self.analyzer.bedrock_agent_client and 
-                    # "QKIWJP7RL9" Agent IDを使用（テスト済み)
-                    "QKIWJP7RL9" and 
-                    # "HMJDNE7YDR" Alias IDを使用（テスト済み)
-                    "HMJDNE7YDR")
+                # AI Agentクライアントを使用するかどうか
+                if self.analyzer.bedrock_agent_client:
                     
                     logger.info(f"Bedrock AI Agentを使用して台本を改善します: {self.analyzer.bedrock_agent_id}")
                     
@@ -388,48 +384,104 @@ class ScriptGenerator:
                                         for event in completion_value:
                                             # イベントのデバッグ情報
                                             logger.info(f"イベント型: {type(event)}")
+                                            if isinstance(event, dict):
+                                                logger.info(f"イベントキー: {list(event.keys())}")
                                             
-                                            # textキーかcompletionキーから直接抽出を試みる
+                                            # メッセージフィールドを探す - 更新版
                                             text_content = None
                                             
-                                            # イベントが辞書アクセスで取得可能な場合
-                                            if hasattr(event, "__getitem__"):
-                                                try:
-                                                    if "text" in event:
+                                            # 共通のメッセージ抽出ロジック
+                                            try:
+                                                # ケース1: dictionaryでメッセージを含む
+                                                if isinstance(event, dict):
+                                                    if "message" in event:
+                                                        text_content = event["message"]
+                                                        logger.info(f"イベントからmessageキーを検出: {str(text_content)[:50]}")
+                                                    elif "text" in event:
                                                         text_content = event["text"]
+                                                        logger.info(f"イベントからtextキーを検出: {str(text_content)[:50]}")
                                                     elif "completion" in event:
                                                         text_content = event["completion"]
-                                                except:
-                                                    pass
-                                                    
-                                            # 属性として取得可能な場合
-                                            if text_content is None and hasattr(event, "text"):
-                                                text_content = event.text
-                                            elif text_content is None and hasattr(event, "completion"):
-                                                text_content = event.completion
+                                                        logger.info(f"イベントからcompletionキーを検出: {str(text_content)[:50]}")
+                                                    # 全文字列表現をとる
+                                                    else:
+                                                        # イベント全体の文字列表現を取得
+                                                        event_str = str(event)
+                                                        # 辞書全体をログに残す
+                                                        logger.info(f"イベント内容全体: {event}")
                                                 
-                                            # chunk.bytesの形式の場合
-                                            if text_content is None and hasattr(event, "chunk"):
-                                                if hasattr(event.chunk, "bytes"):
-                                                    try:
-                                                        chunk_data = json.loads(event.chunk.bytes.decode("utf-8"))
-                                                        if "completion" in chunk_data:
-                                                            text_content = chunk_data["completion"]
-                                                        elif "text" in chunk_data:
-                                                            text_content = chunk_data["text"]
-                                                    except:
-                                                        pass
+                                                # ケース2: 属性としてアクセス
+                                                if text_content is None:
+                                                    if hasattr(event, "message"):
+                                                        text_content = event.message
+                                                        logger.info("属性messageからテキスト抽出")
+                                                    elif hasattr(event, "text"):
+                                                        text_content = event.text
+                                                        logger.info("属性textからテキスト抽出")
+                                                    elif hasattr(event, "completion"):
+                                                        text_content = event.completion
+                                                        logger.info("属性completionからテキスト抽出")
+                                                        
+                                                # ケース3: チャンクデータから抽出
+                                                if text_content is None and hasattr(event, "chunk"):
+                                                    chunk = event.chunk
+                                                    logger.info(f"チャンク型: {type(chunk)}")
+                                                    
+                                                    if hasattr(chunk, "bytes"):
+                                                        try:
+                                                            chunk_bytes = chunk.bytes
+                                                            if isinstance(chunk_bytes, bytes):
+                                                                chunk_str = chunk_bytes.decode("utf-8")
+                                                                logger.info(f"デコード結果: {chunk_str[:100]}")
+                                                                try:
+                                                                    chunk_data = json.loads(chunk_str)
+                                                                    if "completion" in chunk_data:
+                                                                        text_content = chunk_data["completion"]
+                                                                    elif "message" in chunk_data:
+                                                                        text_content = chunk_data["message"] 
+                                                                    elif "text" in chunk_data:
+                                                                        text_content = chunk_data["text"]
+                                                                    logger.info(f"チャンクJSONから抽出: {text_content[:50] if text_content else 'なし'}")
+                                                                except json.JSONDecodeError:
+                                                                    # JSON形式でない場合はそのままテキストとして使用
+                                                                    text_content = chunk_str
+                                                                    logger.info(f"チャンクバイナリから直接テキスト抽出: {text_content[:50]}")
+                                                        except Exception as chunk_err:
+                                                            logger.error(f"チャンク処理エラー: {str(chunk_err)}")
+                                            except Exception as extract_err:
+                                                logger.error(f"テキスト抽出エラー: {str(extract_err)}")
+                                                logger.exception("詳細:")
                                             
                                             # コンテンツが取得できた場合は追加
                                             if text_content:
-                                                full_content.append(str(text_content))
-                                                logger.info(f"抽出テキスト: {str(text_content)[:50]}...")
+                                                # 文字列に変換して追加
+                                                text_content_str = str(text_content)
+                                                full_content.append(text_content_str)
+                                                logger.info(f"抽出テキスト: {text_content_str[:50]}...")
+                                            else:
+                                                # イベントがメッセージを含まない場合、イベントの文字列表現を追加
+                                                event_str = str(event)
+                                                # 明らかなJSONシリアル化エラーの場合を除き追加
+                                                if len(event_str) > 5 and not event_str.startswith("<"):
+                                                    full_content.append(event_str)
+                                                    logger.info(f"イベント文字列として抽出: {event_str[:50]}...")
                                             
                                         # テキストを結合
                                         if full_content:
-                                            improved_script = "".join(full_content)
-                                            logger.info(f"EventStream抽出完了: {len(improved_script)}文字")
-                                            return improved_script
+                                            # 空でないテキスト要素だけを結合
+                                            non_empty_content = [c for c in full_content if c and c.strip()]
+                                            if non_empty_content:
+                                                improved_script = "".join(non_empty_content)
+                                                logger.info(f"EventStream抽出完了: {len(improved_script)}文字")
+                                                
+                                                # 改善されたスクリプトを検証 - 十分な長さと意味のあるコンテンツを確認
+                                                if len(improved_script) > 50 and not improved_script.startswith("{") and "台詞:" in improved_script:
+                                                    logger.info("検証成功: 有効な台本を抽出できました")
+                                                    return improved_script
+                                                else:
+                                                    logger.warning("抽出されたテキストが適切なフォーマットでないため基盤モデルにフォールバックします")
+                                            else:
+                                                logger.warning("空でないテキストが抽出できませんでした")
                                     except Exception as es_err:
                                         logger.error(f"EventStream処理エラー: {str(es_err)}")
                                     
