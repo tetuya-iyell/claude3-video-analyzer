@@ -250,8 +250,9 @@ class ScriptGenerator:
         # Bedrockモードの場合はBedrockを使用
         if self.analyzer.use_bedrock:
             try:
-                # Bedrock AI Agentが設定されているかチェック
-                if (self.analyzer.bedrock_agent_client and 
+                # Bedrock AI Agentが設定されているかチェック - 現状は利用不可のためスキップ
+                if (False and  # 一時的に無効化 - 将来的にEventStream問題が解決したら再有効化する
+                    self.analyzer.bedrock_agent_client and 
                     self.analyzer.bedrock_agent_id and 
                     self.analyzer.bedrock_agent_alias_id and
                     self.analyzer.bedrock_agent_id != 'abcde12345fghi67890j' and  # サンプル値は除外
@@ -274,32 +275,179 @@ class ScriptGenerator:
 台本形式は元の形式を維持して、改善点を取り入れてください。
                         """
                         
-                        # Bedrock AI Agentの呼び出し
+                        # APIリクエストのリトライ回数と待機時間の定義
+                        max_retries = 2
+                        retry_delay = 2  # 秒
+                        
+                        # リトライロジックを組み込んだBedrock AI Agentの呼び出し
                         logger.info("Bedrock AI Agent直接APIを呼び出し中...")
                         
-                        response = self.analyzer.bedrock_agent_client.invoke_agent(
-                            agentId=self.analyzer.bedrock_agent_id,
-                            agentAliasId=self.analyzer.bedrock_agent_alias_id,
-                            sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
-                            inputText=input_text
-                        )
+                        for attempt in range(max_retries + 1):
+                            try:
+                                response = self.analyzer.bedrock_agent_client.invoke_agent(
+                                    agentId=self.analyzer.bedrock_agent_id,
+                                    agentAliasId=self.analyzer.bedrock_agent_alias_id,
+                                    sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
+                                    inputText=input_text
+                                )
+                                break  # 成功したらループを抜ける
+                            except Exception as e:
+                                if "dependencyFailedException" in str(e) and attempt < max_retries:
+                                    # 依存関係エラーの場合はリトライ
+                                    logger.warning(f"API依存関係エラーが発生しました。{retry_delay}秒後にリトライします ({attempt+1}/{max_retries})")
+                                    import time
+                                    time.sleep(retry_delay)
+                                    continue
+                                elif attempt == max_retries:
+                                    # リトライ回数上限に達した場合
+                                    logger.error(f"最大リトライ回数に達しました。通常のモデルにフォールバックします: {e}")
+                                    raise
+                                else:
+                                    # その他のエラーはそのまま上位に伝播
+                                    logger.error(f"Agent呼び出しエラー: {e}")
+                                    raise
                         
+                        # レスポンスの型を確認
                         logger.info(f"応答型: {type(response)}")
-                        logger.info(f"レスポンスキー: {response.keys() if isinstance(response, dict) else 'Not a dict'}")
+                        
+                        # EventStreamかどうかを確認
+                        try:
+                            import botocore
+                            if isinstance(response, botocore.eventstream.EventStream):
+                                logger.info("EventStreamレスポンスを検出しました")
+                                
+                                # EventStreamを解析し、完全なレスポンスを構築
+                                try:
+                                    events_list = []
+                                    for event in response:
+                                        events_list.append(event)
+                                        logger.info(f"イベント型: {type(event)}")
+                                        
+                                    logger.info(f"EventStreamから{len(events_list)}個のイベントを抽出")
+                                    
+                                    # completion値を見つける
+                                    completion_found = False
+                                    for event in events_list:
+                                        # 辞書として直接アクセス
+                                        if isinstance(event, dict) and 'completion' in event:
+                                            response = event  # 応答を更新
+                                            completion_found = True
+                                            logger.info("dictイベントからcompletionを取得しました")
+                                            break
+                                            
+                                        # 属性として確認
+                                        if hasattr(event, 'completion'):
+                                            response = {'completion': event.completion}
+                                            completion_found = True
+                                            logger.info("イベント属性からcompletionを取得しました")
+                                            break
+                                        
+                                        # __dict__を使って確認
+                                        if hasattr(event, '__dict__'):
+                                            event_dict = event.__dict__
+                                            if 'completion' in event_dict:
+                                                response = {'completion': event_dict['completion']}
+                                                completion_found = True
+                                                logger.info("イベント__dict__からcompletionを取得しました")
+                                                break
+                                    
+                                    if not completion_found:
+                                        logger.warning("EventStreamからcompletionを抽出できませんでした")
+                                    
+                                except Exception as e:
+                                    logger.error(f"EventStream処理エラー: {str(e)}")
+                                    logger.exception("詳細:")
+                        except ImportError:
+                            logger.warning("botocoreモジュールをインポートできませんでした")
+                        
+                        # 辞書型の場合はキーを確認
+                        if isinstance(response, dict):
+                            logger.info(f"レスポンスキー: {response.keys()}")
+                        else:
+                            logger.info(f"辞書型ではないレスポンス: {type(response)}")
                         
                         # 辞書型のレスポンスからcompletionを取得
                         improved_script = ""
                         try:
                             if isinstance(response, dict) and 'completion' in response:
-                                improved_script = response['completion']
-                                logger.info(f"完了テキストを取得: {improved_script[:100]}...")
-                            else:
-                                logger.warning("completion キーが見つかりません")
+                                # completion値の処理
+                                completion_value = response['completion']
                                 
-                            # 結果が空の場合はフォールバック
-                            if not improved_script.strip():
-                                logger.warning("Bedrock Agentからの応答が空です。標準モデルにフォールバックします。")
-                                raise ValueError("Empty response from Bedrock Agent")
+                                # EventStreamの特殊処理
+                                import botocore
+                                if isinstance(completion_value, botocore.eventstream.EventStream):
+                                    logger.info("completionフィールド内にEventStreamを検出")
+                                    
+                                    # EventStreamはBedrock Agent APIでは正しく処理できないため、
+                                    # 通常のBedrock基盤モデルにフォールバックする
+                                    logger.warning("Bedrock Agent APIのEventStreamは信頼性が低いため、基盤モデルにフォールバックします。")
+                                    raise ValueError("EventStream response detected, falling back to base model")
+                                    
+                                    # 注：以下のコードはEventStreamパースが正しく動作するようになったら有効化する
+                                    """
+                                    # EventStreamの内容をテキストとして結合
+                                    event_texts = []
+                                    try:
+                                        for event in completion_value:
+                                            logger.info(f"イベント型: {type(event)}")
+                                            
+                                            # 各種抽出方法を試す
+                                            if hasattr(event, 'text'):
+                                                event_texts.append(event.text)
+                                                logger.info(f"イベントから .text 属性を抽出: {event.text[:30]}")
+                                            elif hasattr(event, 'chunk'):
+                                                if hasattr(event.chunk, 'bytes'):
+                                                    # バイト列をデコード
+                                                    try:
+                                                        chunk_text = event.chunk.bytes.decode('utf-8')
+                                                        event_texts.append(chunk_text)
+                                                        logger.info(f"イベントからバイト列を抽出: {chunk_text[:30]}")
+                                                    except:
+                                                        logger.error("バイト列のデコードに失敗")
+                                            elif isinstance(event, dict):
+                                                # 辞書からtextフィールドを抽出
+                                                if 'text' in event:
+                                                    event_texts.append(event['text'])
+                                                    logger.info(f"辞書からtextを抽出: {event['text'][:30]}")
+                                                elif 'completion' in event:
+                                                    event_texts.append(event['completion'])
+                                                    logger.info(f"辞書からcompletionを抽出: {event['completion'][:30]}")
+                                            
+                                            # 文字列表現も試す
+                                            event_str = str(event)
+                                            if event_str and event_str != "None" and len(event_str) > 5:
+                                                event_texts.append(event_str)
+                                                logger.info(f"イベントの文字列表現を追加: {event_str[:30]}")
+                                        
+                                        # 結合してスクリプトを作成
+                                        if event_texts:
+                                            improved_script = "\n".join(event_texts)
+                                            logger.info(f"EventStreamから取得したテキスト: {improved_script[:100]}...")
+                                        else:
+                                            logger.warning("EventStreamからテキストを取得できませんでした")
+                                    except Exception as es_err:
+                                        logger.error(f"EventStream解析エラー: {es_err}")
+                                        logger.exception("詳細:")
+                                    """
+                                        
+                                # 通常の文字列処理
+                                elif isinstance(completion_value, str):
+                                    improved_script = completion_value
+                                    logger.info(f"文字列の完了テキストを取得: {improved_script[:100] if improved_script else '空'}...")
+                                else:
+                                    # その他の型の場合は文字列化
+                                    logger.warning(f"completionが文字列ではなく{type(completion_value)}型です。文字列に変換します。")
+                                    try:
+                                        improved_script = str(completion_value)
+                                    except:
+                                        logger.error("文字列変換に失敗")
+                            else:
+                                logger.warning(f"completion キーが見つからないか、responseが辞書型ではありません: {type(response)}")
+                                
+                            # テキストが取得できたかチェック
+                            if not improved_script or (isinstance(improved_script, str) and not improved_script.strip()):
+                                logger.warning("Bedrock Agentからの有効な応答を取得できませんでした。標準モデルにフォールバックします。")
+                                raise ValueError("Empty or invalid response from Bedrock Agent")
                                 
                             logger.info(f"Bedrock AI Agentを使用して台本「{script_data['chapter_title']}」の改善が完了")
                         except Exception as stream_error:
