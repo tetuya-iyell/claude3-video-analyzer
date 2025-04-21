@@ -18,34 +18,52 @@ logger = logging.getLogger(__name__)
 # .envファイルから環境変数を読み込む
 load_dotenv()
 
-def check_agent(bedrock_client, agent_id):
-    """指定されたエージェントIDが存在するか確認し、エイリアス情報を取得する"""
-    logger.info(f"エージェントID {agent_id} の情報を確認中...")
+def check_agent(agent_client, agent_id, alias_id=None):
+    """指定されたエージェントIDとエイリアスIDの接続性をテストする"""
+    logger.info(f"エージェントID {agent_id} の接続性をテストします...")
+    # エイリアスIDが指定されていない場合は引数のIDを使用
+    if alias_id is None:
+        alias_id = agent_id  # 試験的に同じIDを使用
+    
     try:
-        # エージェント情報の取得
-        response = bedrock_client.get_agent(
-            agentId=agent_id
+        # シンプルに接続テスト
+        test_input = "こんにちは、接続テストです。"
+        session_id = f"test_session_{int(time.time())}"
+        
+        logger.info(f"試験的な呼び出しを実行: agent={agent_id}, alias={alias_id}, session={session_id}")
+        
+        # エージェント呼び出しを試行
+        response = agent_client.invoke_agent(
+            agentId=agent_id,
+            agentAliasId=alias_id,
+            sessionId=session_id,
+            inputText=test_input
         )
         
-        logger.info(f"エージェント情報の取得に成功: {response['agentName']}")
-        logger.info(f"ステータス: {response['agentStatus']}")
+        # 応答型を確認
+        logger.info(f"接続成功: レスポンスタイプ = {type(response)}")
         
-        # 3. エイリアス一覧の取得
-        aliases_response = bedrock_client.list_agent_aliases(
-            agentId=agent_id
-        )
-        
-        if 'agentAliases' in aliases_response and aliases_response['agentAliases']:
-            logger.info(f"エージェント {agent_id} のエイリアス一覧:")
-            for alias in aliases_response['agentAliases']:
-                logger.info(f"  エイリアス名: {alias['agentAliasName']}, ID: {alias['agentAliasId']}")
-        else:
-            logger.info(f"エージェント {agent_id} にはエイリアスがありません")
-        
-        return True, response, aliases_response.get('agentAliases', [])
+        return True, {"status": "connected", "response_type": str(type(response))}, []
     except Exception as e:
-        logger.error(f"エージェント確認エラー: {type(e).__name__}: {str(e)}")
-        return False, None, []
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logger.error(f"エージェント確認エラー: {error_type}: {error_msg}")
+        
+        if 'ResourceNotFoundException' in error_type:
+            logger.error(f"指定されたエージェントID {agent_id} または エイリアスID {alias_id} が存在しません")
+            
+            # エラーメッセージからエージェントIDのみで再試行するべきかを判断
+            if "alias" in error_msg.lower():
+                logger.info("エイリアスIDに問題がある可能性があります")
+                return False, {"status": "alias_invalid", "error": error_msg}, []
+            else:
+                logger.error("エージェントIDが無効です")
+                return False, {"status": "agent_invalid", "error": error_msg}, []
+        elif 'ValidationException' in error_type:
+            logger.error(f"バリデーションエラー: {error_msg}")
+            return False, {"status": "validation_error", "error": error_msg}, []
+        
+        return False, {"status": "unknown_error", "error": error_msg}, []
 
 def main():
     # 設定を表示
@@ -78,52 +96,26 @@ def main():
             region_name=aws_region
         )
         
-        # 1. まず指定されたエージェントが存在するか確認
-        logger.info(f"指定されたエージェントID {target_agent_id} の存在を確認します")
-        
-        # BedrockのAPIクライアント（管理用）を作成
-        bedrock_client = session.client(service_name="bedrock")
-        
-        # エージェント情報を確認
-        success, agent_info, aliases = check_agent(bedrock_client, target_agent_id)
-        
-        if success:
-            logger.info(f"エージェント {target_agent_id} は存在し、アクセス可能です")
-            
-            # エイリアスIDの確認
-            alias_found = False
-            for alias in aliases:
-                if alias['agentAliasId'] == target_alias_id:
-                    logger.info(f"指定されたエイリアスID {target_alias_id} は有効です")
-                    alias_found = True
-                    break
-            
-            if not alias_found and aliases:
-                logger.info(f"指定されたエイリアスID {target_alias_id} は見つかりませんでした。最初のエイリアスを使用します: {aliases[0]['agentAliasId']}")
-                agent_alias_id = aliases[0]['agentAliasId']
-            elif not aliases:
-                logger.error("エージェントにエイリアスがありません。エイリアスを作成する必要があります。")
-                return
-        else:
-            logger.error(f"エージェントID {target_agent_id} は存在しないか、アクセスできません。")
-            logger.info("利用可能なエージェントを確認します...")
-            
-            try:
-                agents_response = bedrock_client.list_agents()
-                if 'agents' in agents_response and agents_response['agents']:
-                    logger.info("利用可能なエージェント一覧:")
-                    for agent in agents_response['agents']:
-                        logger.info(f"  エージェントID: {agent['agentId']}, 名前: {agent['agentName']}")
-                        # このエージェントのエイリアスも確認
-                        _, _, agent_aliases = check_agent(bedrock_client, agent['agentId'])
-                else:
-                    logger.info("利用可能なエージェントがありません")
-            except Exception as e:
-                logger.error(f"エージェント一覧取得エラー: {str(e)}")
-        
         # Bedrock Agent Runtimeクライアントの作成
         agent_client = session.client(service_name="bedrock-agent-runtime")
         logger.info("Bedrock Agent Runtimeクライアントの作成に成功しました")
+        
+        # 1. まず指定されたエージェントが存在するか確認
+        logger.info(f"指定されたエージェントID {target_agent_id} とエイリアスID {target_alias_id} の接続テスト")
+        
+        # 管理APIを使わず、直接エージェント呼び出しでテスト
+        success, agent_info, aliases = check_agent(agent_client, target_agent_id, target_alias_id)
+        
+        # エージェントIDは正しいがエイリアスIDが不正な可能性
+        if not success:
+            if agent_info.get("status") == "alias_invalid":
+                logger.info(f"エイリアスIDが不正です。BEDROCK_AGENT_ALIAS_IDを確認してください。")
+            elif agent_info.get("status") == "agent_invalid":
+                logger.info(f"エージェントIDが不正です。BEDROCK_AGENT_IDを確認してください。")
+            else:
+                logger.error(f"エージェント呼び出しに失敗しました。エラー: {agent_info.get('error', 'Unknown error')}")
+        else:
+            logger.info(f"エージェント {target_agent_id} とエイリアス {target_alias_id} への接続テストに成功しました")
     except Exception as e:
         logger.error(f"セッション作成エラー: {type(e).__name__}: {str(e)}")
         return
