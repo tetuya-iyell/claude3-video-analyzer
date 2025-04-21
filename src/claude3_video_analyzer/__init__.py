@@ -283,53 +283,75 @@ class ScriptGenerator:
                             enableTrace=True
                         )
                         
-                        # 標準のClaude呼び出しに切り替え（Bedrock AI Agentのテストが完了するまで）
-                        logger.info("Bedrock AI Agentによる呼び出しをスキップし、通常のBedrock基盤モデルを使用します")
-                        
-                        # 通常のBedrock基盤モデル呼び出しと同じプロンプトを使用
-                        response = self.analyzer.bedrock_runtime.invoke_model(
-                            modelId=self.analyzer.model,
-                            body=json.dumps({
-                                "anthropic_version": "bedrock-2023-05-31",
-                                "max_tokens": 2000,
-                                "messages": [
-                                    {"role": "user", "content": prompt}
-                                ]
-                            })
-                        )
-                        
-                        # レスポンスの解析
-                        response_body = json.loads(response.get('body').read())
-                        improved_script = response_body['content'][0]['text']
-                        
-                        logger.info(f"Bedrock基盤モデルを使用して台本「{script_data['chapter_title']}」の改善が完了")
-                        
-                        # EventStream処理のデバッグコード(future)
-                        # 以下のコードはBedrockエージェント実装時に有効化
-                        """
+                        # EventStreamからレスポンスを処理
                         improved_script = ""
                         try:
                             logger.info("EventStreamからレスポンスを収集中...")
                             logger.debug(f"response_stream type: {type(response_stream)}")
                             
-                            # 試験的なデバッグコード
-                            import builtins
-                            logger.debug(f"dir(response_stream): {builtins.dir(response_stream)}")
-                            
-                            # 文字列をとして結合していく方法
-                            all_text = ""
+                            # レスポンス処理
                             for event in response_stream:
-                                logger.debug(f"イベント: {builtins.str(event)}")
-                                all_text += builtins.str(event)
+                                # イベントタイプの確認
+                                logger.debug(f"イベントタイプ: {type(event)}")
+                                
+                                # イベントを文字列として取得
+                                event_str = str(event)
+                                
+                                # Agent レスポンスを抽出するための処理
+                                if hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
+                                    # バイナリデータを抽出して処理
+                                    try:
+                                        chunk_data = json.loads(event.chunk.bytes.decode('utf-8'))
+                                        if 'completion' in chunk_data:
+                                            improved_script += chunk_data['completion']
+                                    except Exception as e:
+                                        logger.error(f"チャンクデータ処理エラー: {str(e)}")
+                                
+                                # 辞書形式の場合
+                                elif isinstance(event, dict) and 'chunk' in event:
+                                    try:
+                                        if 'bytes' in event['chunk']:
+                                            chunk_data = json.loads(event['chunk']['bytes'])
+                                            if 'completion' in chunk_data:
+                                                improved_script += chunk_data['completion']
+                                    except Exception as e:
+                                        logger.error(f"辞書チャンクデータ処理エラー: {str(e)}")
+                                
+                                # AgentCompletionイベントの処理
+                                elif hasattr(event, 'completion'):
+                                    improved_script += event.completion
                             
-                            logger.info(f"全テキスト: {all_text[:200]}...")
-                            improved_script = all_text
+                            logger.info(f"Bedrock Agentからの応答テキスト: {improved_script[:200]}...")
+                            
+                            # 結果が空の場合はフォールバック
+                            if not improved_script.strip():
+                                logger.warning("Bedrock Agentからの応答が空です。標準モデルにフォールバックします。")
+                                raise ValueError("Empty response from Bedrock Agent")
+                                
+                            logger.info(f"Bedrock AI Agentを使用して台本「{script_data['chapter_title']}」の改善が完了")
                         except Exception as stream_error:
                             logger.error(f"ストリーム解析エラー: {str(stream_error)}")
                             logger.exception("例外の詳細:")
-                            # ここではエラーを投げずに続行
-                            improved_script = f"エラーが発生しました: {str(stream_error)}"
-                        """
+                            
+                            # 通常のBedrock基盤モデルにフォールバック
+                            logger.info("通常のBedrock基盤モデルにフォールバックします")
+                            
+                            response = self.analyzer.bedrock_runtime.invoke_model(
+                                modelId=self.analyzer.model,
+                                body=json.dumps({
+                                    "anthropic_version": "bedrock-2023-05-31",
+                                    "max_tokens": 2000,
+                                    "messages": [
+                                        {"role": "user", "content": prompt}
+                                    ]
+                                })
+                            )
+                            
+                            # レスポンスの解析
+                            response_body = json.loads(response.get('body').read())
+                            improved_script = response_body['content'][0]['text']
+                            
+                            logger.info(f"フォールバック: Bedrock基盤モデルを使用して台本「{script_data['chapter_title']}」の改善が完了")
                         
                         if not improved_script:
                             logger.warning("Bedrock AI Agentからの応答が空です。通常のモデル呼び出しに切り替えます。")
