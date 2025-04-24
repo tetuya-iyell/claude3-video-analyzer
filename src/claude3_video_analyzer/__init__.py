@@ -7,6 +7,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
+from .aws_retry import aws_api_retry
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -275,37 +276,30 @@ class ScriptGenerator:
                         alias_id = "HMJDNE7YDR" # テスト済みの既知のAlias ID
                         
                         # APIリクエストのリトライ回数と待機時間の定義
-                        max_retries = 2
-                        retry_delay = 2  # 秒
+                        max_retries = 3
+                        retry_delay = 3  # 秒
                         
                         # リトライロジックを組み込んだBedrock AI Agentの呼び出し
                         logger.info(f"固定Agent ID {agent_id}とAlias ID {alias_id}を使用してBedrock AI Agentを呼び出し中...")
                         
-                        for attempt in range(max_retries + 1):
-                            try:
-                                response = self.analyzer.bedrock_agent_client.invoke_agent(
-                                    agentId=agent_id,
-                                    agentAliasId=alias_id,
-                                    sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
-                                    inputText=input_text
-                                )
-                                logger.info("AI Agent呼び出し成功")
-                                break  # 成功したらループを抜ける
-                            except Exception as e:
-                                if "dependencyFailedException" in str(e) and attempt < max_retries:
-                                    # 依存関係エラーの場合はリトライ
-                                    logger.warning(f"API依存関係エラーが発生しました。{retry_delay}秒後にリトライします ({attempt+1}/{max_retries})")
-                                    import time
-                                    time.sleep(retry_delay)
-                                    continue
-                                elif attempt == max_retries:
-                                    # リトライ回数上限に達した場合
-                                    logger.error(f"最大リトライ回数に達しました。通常のモデルにフォールバックします: {e}")
-                                    raise
-                                else:
-                                    # その他のエラーはそのまま上位に伝播
-                                    logger.error(f"Agent呼び出しエラー: {e}")
-                                    raise
+                        # 専用のリトライデコレーターを使用してAPI呼び出しをラップ
+                        @aws_api_retry(max_retries=3, base_delay=3, jitter=0.5)
+                        def call_agent_with_retry():
+                            return self.analyzer.bedrock_agent_client.invoke_agent(
+                                agentId=agent_id,
+                                agentAliasId=alias_id,
+                                sessionId=f"script_improvement_{int(self.analyzer.time_module.time())}",
+                                inputText=input_text
+                            )
+                            
+                        try:
+                            # リトライロジック付きで呼び出し
+                            response = call_agent_with_retry()
+                            logger.info("AI Agent呼び出し成功")
+                        except Exception as e:
+                            # すべてのリトライが失敗した場合
+                            logger.error(f"すべてのAgentリトライが失敗しました: {e}")
+                            raise
                         
                         # レスポンスの型を確認
                         logger.info(f"応答型: {type(response)}")
@@ -372,122 +366,266 @@ class ScriptGenerator:
                             if isinstance(response, dict) and 'completion' in response:
                                 # completion値の処理
                                 completion_value = response['completion']
+                                # レスポンスの文字列表現を安全のために取得
+                                response_repr = str(response)[:500] # 長すぎないようにする
+                                logger.info(f"レスポンス文字列表現: {response_repr}")
                                 
-                                # EventStreamの特殊処理 - 同期処理に変更
+                                # EventStreamの特殊処理 - 完全に書き直した新しい実装
                                 import botocore
                                 if isinstance(completion_value, botocore.eventstream.EventStream):
-                                    logger.info("completionフィールド内にEventStreamを検出")
+                                    logger.info(f"EventStreamを検出: 新しいバイナリデータ抽出アルゴリズムで処理します")
                                     
-                                    # 同期的にイベントストリームを処理
-                                    full_content = []
+                                    # バイナリデータ処理の専用関数
+                                    def extract_text_from_binary(binary_data):
+                                        """バイナリデータから日本語テキストを抽出する関数"""
+                                        if not binary_data or not isinstance(binary_data, bytes):
+                                            return None
+                                            
+                                        logger.info(f"バイナリデータ抽出処理: 長さ={len(binary_data)}")
+                                        
+                                        # 1. 直接デコード試行
+                                        for encoding in ["utf-8", "shift_jis", "cp932", "euc_jp", "iso2022_jp", "latin-1"]:
+                                            try:
+                                                decoded = binary_data.decode(encoding, errors='ignore')
+                                                # 日本語テキストが含まれているかチェック (台詞関連のキーワードを探す)
+                                                script_markers = ["台詞:", "セリフ:", "ゆっくり:", "れいむ:", "まりさ:"]
+                                                if any(marker in decoded for marker in script_markers):
+                                                    logger.info(f"{encoding}で直接デコードに成功: 台本マーカーを検出")
+                                                    return decoded
+                                                
+                                                # 一般的な日本語文字が含まれているかチェック
+                                                if any(0x3040 <= ord(c) <= 0x30FF or 0x4E00 <= ord(c) <= 0x9FFF for c in decoded[:1000]):
+                                                    logger.info(f"{encoding}で直接デコードに成功: 日本語文字を検出")
+                                                    return decoded
+                                            except Exception as e:
+                                                pass
+                                        
+                                        # 2. バイト列文字列からの抽出 (b'...'形式)
+                                        bytes_str = str(binary_data)
+                                        import re
+                                        
+                                        # b'...'形式から内容を抽出
+                                        try:
+                                            if bytes_str.startswith(b"b'") or bytes_str.startswith("b'"):
+                                                # 文字列からb'...'部分を抽出
+                                                pattern = r"^b'(.+)'$"
+                                                content_match = re.match(pattern, bytes_str)
+                                                
+                                                if content_match:
+                                                    escaped_content = content_match.group(1)
+                                                    
+                                                    # エスケープシーケンスの処理方法1: codecs
+                                                    try:
+                                                        import codecs
+                                                        # 文字列をバイトに変換してからエスケープ解除
+                                                        byte_data = escaped_content.encode('utf-8')
+                                                        decoded = codecs.escape_decode(byte_data)[0]
+                                                        decoded_str = decoded.decode('utf-8', errors='replace')
+                                                        
+                                                        if len(decoded_str) > 100 and any(0x3040 <= ord(c) <= 0x30FF for c in decoded_str[:1000]):
+                                                            logger.info(f"codecs経由でエスケープ解除に成功: {decoded_str[:100]}...")
+                                                            return decoded_str
+                                                    except Exception as codec_err:
+                                                        logger.warning(f"codecs経由のデコードに失敗: {codec_err}")
+                                                        
+                                                    # エスケープシーケンスの処理方法2: unicode_escape
+                                                    try:
+                                                        # latin-1でエンコードしてからunicode_escapeでデコード
+                                                        byte_data = escaped_content.encode('latin-1')
+                                                        decoded = byte_data.decode('unicode_escape', errors='replace')
+                                                        
+                                                        if len(decoded) > 100 and any(0x3040 <= ord(c) <= 0x30FF for c in decoded[:1000]):
+                                                            logger.info(f"unicode_escape経由でエスケープ解除に成功: {decoded[:100]}...")
+                                                            return decoded
+                                                    except Exception as unicode_err:
+                                                        logger.warning(f"unicode_escape経由のデコードに失敗: {unicode_err}")
+                                        except Exception as extract_err:
+                                            logger.warning(f"バイト文字列からの抽出に失敗: {extract_err}")
+                                        
+                                        # 3. JSONフォーマットの検索
+                                        json_patterns = [
+                                            r'completion":"([^"]+)"',
+                                            r'message":"([^"]+)"',
+                                            r'text":"([^"]+)"',
+                                            r'"content":"([^"]+)"'
+                                        ]
+                                        
+                                        for pattern in json_patterns:
+                                            try:
+                                                matches = re.findall(pattern, bytes_str)
+                                                if matches and len(matches[0]) > 100:
+                                                    content = matches[0]
+                                                    logger.info(f"JSON抽出に成功: {content[:100]}...")
+                                                    return content
+                                            except Exception:
+                                                pass
+                                        
+                                        return None
+
+                                    # イベントストリームから直接バイナリデータを抽出する処理
                                     try:
                                         for event in completion_value:
-                                            # イベントのデバッグ情報
+                                            # デバッグ情報
                                             logger.info(f"イベント型: {type(event)}")
-                                            if isinstance(event, dict):
-                                                logger.info(f"イベントキー: {list(event.keys())}")
                                             
-                                            # メッセージフィールドを探す - 更新版
-                                            text_content = None
-                                            
-                                            # 共通のメッセージ抽出ロジック
-                                            try:
-                                                # ケース1: dictionaryでメッセージを含む
-                                                if isinstance(event, dict):
-                                                    if "message" in event:
-                                                        text_content = event["message"]
-                                                        logger.info(f"イベントからmessageキーを検出: {str(text_content)[:50]}")
-                                                    elif "text" in event:
-                                                        text_content = event["text"]
-                                                        logger.info(f"イベントからtextキーを検出: {str(text_content)[:50]}")
-                                                    elif "completion" in event:
-                                                        text_content = event["completion"]
-                                                        logger.info(f"イベントからcompletionキーを検出: {str(text_content)[:50]}")
-                                                    # 全文字列表現をとる
-                                                    else:
-                                                        # イベント全体の文字列表現を取得
-                                                        event_str = str(event)
-                                                        # 辞書全体をログに残す
-                                                        logger.info(f"イベント内容全体: {event}")
-                                                
-                                                # ケース2: 属性としてアクセス
-                                                if text_content is None:
-                                                    if hasattr(event, "message"):
-                                                        text_content = event.message
-                                                        logger.info("属性messageからテキスト抽出")
-                                                    elif hasattr(event, "text"):
-                                                        text_content = event.text
-                                                        logger.info("属性textからテキスト抽出")
-                                                    elif hasattr(event, "completion"):
-                                                        text_content = event.completion
-                                                        logger.info("属性completionからテキスト抽出")
-                                                        
-                                                # ケース3: チャンクデータから抽出
-                                                if text_content is None and hasattr(event, "chunk"):
-                                                    chunk = event.chunk
-                                                    logger.info(f"チャンク型: {type(chunk)}")
+                                            # CASE 1: chunk.bytesからの直接抽出(最も一般的)
+                                            if hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
+                                                binary_data = event.chunk.bytes
+                                                if isinstance(binary_data, bytes) and len(binary_data) > 10:
+                                                    logger.info(f"chunk.bytes検出: 長さ={len(binary_data)}")
                                                     
-                                                    if hasattr(chunk, "bytes"):
+                                                    # 抽出処理
+                                                    extracted_text = extract_text_from_binary(binary_data)
+                                                    if extracted_text and len(extracted_text) > 300:
+                                                        logger.info("バイナリデータから有効なテキストを抽出しました")
+                                                        return extracted_text
+                                            
+                                            # CASE 2: bytesキーからの抽出(辞書型の場合)
+                                            elif isinstance(event, dict) and 'chunk' in event and 'bytes' in event['chunk']:
+                                                binary_data = event['chunk']['bytes']
+                                                if isinstance(binary_data, bytes) and len(binary_data) > 10:
+                                                    logger.info(f"event['chunk']['bytes']検出: 長さ={len(binary_data)}")
+                                                    
+                                                    # 抽出処理
+                                                    extracted_text = extract_text_from_binary(binary_data)
+                                                    if extracted_text and len(extracted_text) > 300:
+                                                        logger.info("辞書型イベントからテキストを抽出しました")
+                                                        return extracted_text
+                                            
+                                            # CASE 3: イベント全体が辞書で、その中にcompletionがある場合
+                                            elif isinstance(event, dict) and 'completion' in event:
+                                                completion_value = event['completion']
+                                                if isinstance(completion_value, str) and len(completion_value) > 300:
+                                                    logger.info(f"completion直接検出: {completion_value[:100]}...")
+                                                    return completion_value
+                                                elif isinstance(completion_value, bytes):
+                                                    extracted_text = extract_text_from_binary(completion_value)
+                                                    if extracted_text:
+                                                        return extracted_text
+                                            
+                                            # CASE 4: 文字列表現から抽出
+                                            event_str = str(event)
+                                            if "bytes" in event_str and len(event_str) > 200:
+                                                try:
+                                                    import re
+                                                    # バイト列のパターンを検索
+                                                    bytes_pattern = r"bytes':\s*b'([^']+)'"
+                                                    matches = re.search(bytes_pattern, event_str)
+                                                    
+                                                    if matches:
+                                                        binary_content = matches.group(1)
+                                                        logger.info(f"文字列表現からバイナリコンテンツ検出: {len(binary_content)}文字")
+                                                        
+                                                        # エスケープシーケンスを解釈
                                                         try:
-                                                            chunk_bytes = chunk.bytes
-                                                            if isinstance(chunk_bytes, bytes):
-                                                                chunk_str = chunk_bytes.decode("utf-8")
-                                                                logger.info(f"デコード結果: {chunk_str[:100]}")
-                                                                try:
-                                                                    chunk_data = json.loads(chunk_str)
-                                                                    if "completion" in chunk_data:
-                                                                        text_content = chunk_data["completion"]
-                                                                    elif "message" in chunk_data:
-                                                                        text_content = chunk_data["message"] 
-                                                                    elif "text" in chunk_data:
-                                                                        text_content = chunk_data["text"]
-                                                                    logger.info(f"チャンクJSONから抽出: {text_content[:50] if text_content else 'なし'}")
-                                                                except json.JSONDecodeError:
-                                                                    # JSON形式でない場合はそのままテキストとして使用
-                                                                    text_content = chunk_str
-                                                                    logger.info(f"チャンクバイナリから直接テキスト抽出: {text_content[:50]}")
-                                                        except Exception as chunk_err:
-                                                            logger.error(f"チャンク処理エラー: {str(chunk_err)}")
-                                            except Exception as extract_err:
-                                                logger.error(f"テキスト抽出エラー: {str(extract_err)}")
-                                                logger.exception("詳細:")
-                                            
-                                            # コンテンツが取得できた場合は追加
-                                            if text_content:
-                                                # 文字列に変換して追加
-                                                text_content_str = str(text_content)
-                                                full_content.append(text_content_str)
-                                                logger.info(f"抽出テキスト: {text_content_str[:50]}...")
-                                            else:
-                                                # イベントがメッセージを含まない場合、イベントの文字列表現を追加
-                                                event_str = str(event)
-                                                # 明らかなJSONシリアル化エラーの場合を除き追加
-                                                if len(event_str) > 5 and not event_str.startswith("<"):
-                                                    full_content.append(event_str)
-                                                    logger.info(f"イベント文字列として抽出: {event_str[:50]}...")
-                                            
-                                        # テキストを結合
-                                        if full_content:
-                                            # 空でないテキスト要素だけを結合
-                                            non_empty_content = [c for c in full_content if c and c.strip()]
-                                            if non_empty_content:
-                                                improved_script = "".join(non_empty_content)
-                                                logger.info(f"EventStream抽出完了: {len(improved_script)}文字")
-                                                
-                                                # 改善されたスクリプトを検証 - 十分な長さと意味のあるコンテンツを確認
-                                                if len(improved_script) > 50 and not improved_script.startswith("{") and "台詞:" in improved_script:
-                                                    logger.info("検証成功: 有効な台本を抽出できました")
-                                                    return improved_script
-                                                else:
-                                                    logger.warning("抽出されたテキストが適切なフォーマットでないため基盤モデルにフォールバックします")
-                                            else:
-                                                logger.warning("空でないテキストが抽出できませんでした")
-                                    except Exception as es_err:
-                                        logger.error(f"EventStream処理エラー: {str(es_err)}")
+                                                            # latin-1でエンコードしてからunicode_escapeでデコード
+                                                            escaped_bytes = binary_content.encode('latin-1')
+                                                            decoded = escaped_bytes.decode('unicode_escape', errors='replace')
+                                                            
+                                                            if len(decoded) > 300 and any(0x3040 <= ord(c) <= 0x30FF for c in decoded[:1000]):
+                                                                logger.info(f"文字列表現からテキスト抽出成功: {decoded[:100]}...")
+                                                                return decoded
+                                                        except Exception as escape_err:
+                                                            logger.warning(f"エスケープシーケンス処理エラー: {escape_err}")
+                                                except Exception as regex_err:
+                                                    logger.warning(f"正規表現抽出エラー: {regex_err}")
+                                    except Exception as event_err:
+                                        logger.error(f"イベント処理エラー: {event_err}")
                                     
-                                    # EventStream処理失敗時は基盤モデルにフォールバック
-                                    logger.warning("EventStream処理に失敗したため、基盤モデルにフォールバックします。")
-                                    raise ValueError("EventStream processing failed, falling back to base model")
+                                    # 最終手段: EventStreamの文字列表現全体から抽出
+                                    try:
+                                        stream_str = str(completion_value)
+                                        logger.info(f"EventStream文字列表現: {len(stream_str)}文字")
+                                        
+                                        # 台本の特徴的なパターンを探す
+                                        script_patterns = [
+                                            r'(台詞:.+)',
+                                            r'(れいむ:.+)',
+                                            r'(まりさ:.+)',
+                                            r'(ゆっくり:.+)',
+                                            r'(ナレーション:.+)'
+                                        ]
+                                        
+                                        for pattern in script_patterns:
+                                            try:
+                                                import re
+                                                matches = re.search(pattern, stream_str, re.DOTALL)
+                                                if matches:
+                                                    script_content = matches.group(1)
+                                                    if len(script_content) > 300:
+                                                        logger.info(f"文字列全体から台本パターン抽出: {script_content[:100]}...")
+                                                        return script_content
+                                            except Exception:
+                                                pass
+                                                
+                                        # バイナリデータパターンを探す
+                                        binary_pattern = r"b'([^']+)'"
+                                        try:
+                                            import re
+                                            all_matches = re.findall(binary_pattern, stream_str)
+                                            
+                                            # 長いマッチを優先して処理
+                                            sorted_matches = sorted(all_matches, key=len, reverse=True)
+                                            
+                                            for binary_content in sorted_matches[:3]:  # 上位3つの長いマッチのみ処理
+                                                if len(binary_content) > 500:
+                                                    logger.info(f"文字列全体からバイナリパターン検出: {len(binary_content)}文字")
+                                                    
+                                                    try:
+                                                        # Unicode escape sequenceとして処理
+                                                        escaped_bytes = binary_content.encode('latin-1')
+                                                        decoded = escaped_bytes.decode('unicode_escape', errors='replace')
+                                                        
+                                                        # 日本語文字を含むか確認
+                                                        if any(0x3040 <= ord(c) <= 0x30FF for c in decoded[:1000]):
+                                                            logger.info(f"最終手段でテキスト抽出成功: {decoded[:100]}...")
+                                                            return decoded
+                                                    except Exception as final_err:
+                                                        logger.warning(f"最終デコード処理エラー: {final_err}")
+                                        except Exception as pattern_err:
+                                            logger.warning(f"最終パターン検索エラー: {pattern_err}")
+                                    except Exception as str_err:
+                                        logger.error(f"文字列表現処理エラー: {str_err}")
+                                    
+                                    # 再試行: セッションIDを変えて再度Agentを呼び出し
+                                    try:
+                                        logger.info("セッションIDを変えてAgentを再呼び出し")
+                                        
+                                        # analyzer.time_moduleを使用してタイムスタンプを生成
+                                        # このmoduleは初期化時にimportされているので安全
+                                        new_session_id = f"retry_session_{int(self.analyzer.time_module.time() * 1000)}"
+                                        
+                                        # enableTraceを明示的に設定してリトライ
+                                        @aws_api_retry(max_retries=2, base_delay=2)
+                                        def retry_with_new_session():
+                                            return self.analyzer.bedrock_agent_client.invoke_agent(
+                                                agentId=agent_id,
+                                                agentAliasId=alias_id,
+                                                sessionId=new_session_id,
+                                                inputText=input_text,
+                                                enableTrace=True
+                                            )
+                                        
+                                        # リトライ実行
+                                        retry_response = retry_with_new_session()
+                                        
+                                        # レスポンスチェック
+                                        if isinstance(retry_response, dict) and "completion" in retry_response:
+                                            retry_text = retry_response["completion"]
+                                            if isinstance(retry_text, str) and len(retry_text) > 200:
+                                                logger.info(f"再試行で成功: {retry_text[:100]}...")
+                                                return retry_text
+                                            elif isinstance(retry_text, bytes):
+                                                decoded = extract_text_from_binary(retry_text)
+                                                if decoded:
+                                                    logger.info(f"再試行でバイナリ応答を正常にデコード: {decoded[:100]}...")
+                                                    return decoded
+                                    except Exception as retry_err:
+                                        logger.error(f"再試行エラー: {retry_err}")
+                                    
+                                    # すべての試みが失敗した場合
+                                    logger.warning("EventStream処理の全試行に失敗したため、基盤モデルにフォールバックします")
+                                    raise ValueError("Failed to process EventStream, falling back to base model")
                                     
                                     # 注：以下のコードはEventStreamパースが正しく動作するようになったら有効化する
                                     """
@@ -591,18 +729,24 @@ class ScriptGenerator:
                         # 通常のBedrock基盤モデル呼び出しにフォールバック
                         raise ValueError(f"AI Agent error: {str(agent_error)}")
                 else:
-                    # 通常のBedrock基盤モデル呼び出し
+                    # 通常のBedrock基盤モデル呼び出し（リトライ機能付き）
                     logger.info("通常のBedrock基盤モデルを使用します")
-                    response = self.analyzer.bedrock_runtime.invoke_model(
-                        modelId=self.analyzer.model,
-                        body=json.dumps({
-                            "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 2000,
-                            "messages": [
-                                {"role": "user", "content": prompt}
-                            ]
-                        })
-                    )
+                    
+                    @aws_api_retry(max_retries=2, base_delay=2)
+                    def call_bedrock_model():
+                        return self.analyzer.bedrock_runtime.invoke_model(
+                            modelId=self.analyzer.model,
+                            body=json.dumps({
+                                "anthropic_version": "bedrock-2023-05-31",
+                                "max_tokens": 2000,
+                                "messages": [
+                                    {"role": "user", "content": prompt}
+                                ]
+                            })
+                        )
+                    
+                    # リトライ機能付きで呼び出し
+                    response = call_bedrock_model()
                     
                     # レスポンスの解析
                     response_body = json.loads(response.get('body').read())
