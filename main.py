@@ -181,25 +181,57 @@ def analyze_video():
                         # ストリーミングAPIが拒否されているため、通常の同期APIを使用
                         logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                         
-                        # 通常のinvoke_modelを使用
-                        response = analyzer.bedrock_runtime.invoke_model(
-                            modelId=analyzer.model, body=body
-                        )
+                        # モデルに応じてリクエスト形式を調整
+                        model = analyzer.model
+                        if "amazon.titan" in model:
+                            # Amazon Titanモデル用のリクエスト形式
+                            titan_body = json.dumps({
+                                "inputText": prompt,
+                                "textGenerationConfig": {
+                                    "maxTokenCount": 2048,
+                                    "temperature": 0.7,
+                                    "topP": 0.9
+                                }
+                            })
+                            response = analyzer.bedrock_runtime.invoke_model(
+                                modelId=model, body=titan_body
+                            )
+                        else:
+                            # Anthropicモデル用（標準）
+                            response = analyzer.bedrock_runtime.invoke_model(
+                                modelId=model, body=body
+                            )
                         
                         # 応答本体から結果を抽出
                         response_body = json.loads(response.get('body').read())
-                        if 'content' in response_body and len(response_body['content']) > 0:
-                            for content_item in response_body['content']:
-                                if content_item.get('type') == 'text':
-                                    text = content_item.get('text', '')
-                                    
-                                    # テキストを小さな部分に分割して疑似ストリーミング
-                                    chunk_size = 20  # 20文字ずつ送信
-                                    for i in range(0, len(text), chunk_size):
-                                        text_chunk = text[i:i+chunk_size]
-                                        yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                        import time
-                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                        
+                        # モデルタイプに応じて異なる応答形式に対応
+                        if "amazon.titan" in model:
+                            # Titanモデルの場合はoutputTextから直接取得
+                            if 'outputText' in response_body:
+                                text = response_body['outputText']
+                                
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                        else:
+                            # Anthropicモデルの場合はcontent配列から取得
+                            if 'content' in response_body and len(response_body['content']) > 0:
+                                for content_item in response_body['content']:
+                                    if content_item.get('type') == 'text':
+                                        text = content_item.get('text', '')
+                                        
+                                        # テキストを小さな部分に分割して疑似ストリーミング
+                                        chunk_size = 20  # 20文字ずつ送信
+                                        for i in range(0, len(text), chunk_size):
+                                            text_chunk = text[i:i+chunk_size]
+                                            yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                            import time
+                                            time.sleep(0.05)  # 少し待機して疑似ストリーミング
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"
@@ -316,28 +348,60 @@ def analyze_video_with_chapters():
                     # ストリーミングAPIが拒否されているため、通常の同期APIを使用
                     logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                     
-                    # 通常のinvoke_modelを使用
-                    response = analyzer.bedrock_runtime.invoke_model(
-                        modelId=analyzer.model, body=body
-                    )
+                    # モデルに応じてリクエスト形式を調整
+                    model = analyzer.model
+                    if "amazon.titan" in model:
+                        # Amazon Titanモデル用のリクエスト形式
+                        titan_body = json.dumps({
+                            "inputText": prompt,
+                            "textGenerationConfig": {
+                                "maxTokenCount": 2048,
+                                "temperature": 0.7,
+                                "topP": 0.9
+                            }
+                        })
+                        response = analyzer.bedrock_runtime.invoke_model(
+                            modelId=model, body=titan_body
+                        )
+                    else:
+                        # Anthropicモデル用（標準）
+                        response = analyzer.bedrock_runtime.invoke_model(
+                            modelId=model, body=body
+                        )
                     
                     # 応答本体から結果を抽出
                     response_body = json.loads(response.get('body').read())
                     result_text = ""
                     
-                    if 'content' in response_body and len(response_body['content']) > 0:
-                        for content_item in response_body['content']:
-                            if content_item.get('type') == 'text':
-                                text = content_item.get('text', '')
-                                result_text += text
-                                
-                                # テキストを小さな部分に分割して疑似ストリーミング
-                                chunk_size = 20  # 20文字ずつ送信
-                                for i in range(0, len(text), chunk_size):
-                                    text_chunk = text[i:i+chunk_size]
-                                    yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                    import time
-                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                    # モデルタイプに応じて異なる応答形式に対応
+                    if "amazon.titan" in model:
+                        # Titanモデルの場合はoutputTextから直接取得
+                        if 'outputText' in response_body:
+                            text = response_body['outputText']
+                            result_text += text
+                            
+                            # テキストを小さな部分に分割して疑似ストリーミング
+                            chunk_size = 20  # 20文字ずつ送信
+                            for i in range(0, len(text), chunk_size):
+                                text_chunk = text[i:i+chunk_size]
+                                yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                import time
+                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                    else:
+                        # Anthropicモデルの場合はcontent配列から取得
+                        if 'content' in response_body and len(response_body['content']) > 0:
+                            for content_item in response_body['content']:
+                                if content_item.get('type') == 'text':
+                                    text = content_item.get('text', '')
+                                    result_text += text
+                                    
+                                    # テキストを小さな部分に分割して疑似ストリーミング
+                                    chunk_size = 20  # 20文字ずつ送信
+                                    for i in range(0, len(text), chunk_size):
+                                        text_chunk = text[i:i+chunk_size]
+                                        yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                        import time
+                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"

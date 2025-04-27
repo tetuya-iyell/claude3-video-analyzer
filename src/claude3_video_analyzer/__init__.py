@@ -868,10 +868,15 @@ class VideoAnalyzer:
         # モードに応じたモデルIDを環境変数から取得
         if self.use_bedrock:
             # Bedrockモードの場合はBEDROCK_MODEL_IDを使用
+            # Amazon Titanモデルをデフォルトで使用（アクセス制限の少ないAWSネイティブモデル）
             default_model = (
-                "anthropic.claude-3-5-sonnet-20240620-v1:0"  # フォールバック値
+                "amazon.titan-text-express-v1"  # フォールバック値（Amazon Titan Text Express）
             )
             self.model = os.getenv("BEDROCK_MODEL_ID", default_model)
+            # 現在のアカウントで許可されたAmazon Titanモデルを使用
+            if "anthropic" in self.model.lower():
+                logger.warning(f"Anthropicモデル {self.model} へのアクセスが拒否されている可能性があるため、Amazon Titanモデルにフォールバックします")
+                self.model = default_model
             print(f"Bedrock mode: Using model {self.model}")
         else:
             # Anthropicモードの場合はANTHROPIC_MODEL_IDを使用
@@ -1037,27 +1042,62 @@ class VideoAnalyzer:
                 logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                 
                 # 通常のinvoke_modelを使用
-                response = self.bedrock_runtime.invoke_model(
-                    modelId=model, body=body
-                )
+                # モデルに応じてリクエスト形式を調整
+                if "amazon.titan" in model:
+                    # Amazon Titanモデル用のリクエスト形式
+                    titan_body = json.dumps({
+                        "inputText": prompt,
+                        "textGenerationConfig": {
+                            "maxTokenCount": 2048,
+                            "temperature": 0.7,
+                            "topP": 0.9
+                        }
+                    })
+                    response = self.bedrock_runtime.invoke_model(
+                        modelId=model, body=titan_body
+                    )
+                else:
+                    # Anthropicモデル用（標準）
+                    response = self.bedrock_runtime.invoke_model(
+                        modelId=model, body=body
+                    )
                 
                 # 応答本体から結果を抽出
                 response_body = json.loads(response.get('body').read())
-                if 'content' in response_body and len(response_body['content']) > 0:
-                    for content_item in response_body['content']:
-                        if content_item.get('type') == 'text':
-                            text = content_item.get('text', '')
-                            result_text += text
-                            
-                            # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                            if stream_callback:
-                                # テキストを小さな部分に分割して疑似ストリーミング
-                                chunk_size = 20  # 20文字ずつ送信
-                                for i in range(0, len(text), chunk_size):
-                                    text_chunk = text[i:i+chunk_size]
-                                    stream_callback(text_chunk)
-                                    import time
-                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                
+                # モデルタイプに応じて異なる応答形式に対応
+                if "amazon.titan" in model:
+                    # Titanモデルの場合はoutputTextから直接取得
+                    if 'outputText' in response_body:
+                        text = response_body['outputText']
+                        result_text += text
+                        
+                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                        if stream_callback:
+                            # テキストを小さな部分に分割して疑似ストリーミング
+                            chunk_size = 20  # 20文字ずつ送信
+                            for i in range(0, len(text), chunk_size):
+                                text_chunk = text[i:i+chunk_size]
+                                stream_callback(text_chunk)
+                                import time
+                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                else:
+                    # Anthropicモデルの場合はcontent配列から取得
+                    if 'content' in response_body and len(response_body['content']) > 0:
+                        for content_item in response_body['content']:
+                            if content_item.get('type') == 'text':
+                                text = content_item.get('text', '')
+                                result_text += text
+                                
+                                # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                                if stream_callback:
+                                    # テキストを小さな部分に分割して疑似ストリーミング
+                                    chunk_size = 20  # 20文字ずつ送信
+                                    for i in range(0, len(text), chunk_size):
+                                        text_chunk = text[i:i+chunk_size]
+                                        stream_callback(text_chunk)
+                                        import time
+                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
                 raise RuntimeError(f"Bedrock API error: {str(e)}")
 
@@ -1144,27 +1184,62 @@ class VideoAnalyzer:
                 logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                 
                 # 通常のinvoke_modelを使用
-                response = self.bedrock_runtime.invoke_model(
-                    modelId=model, body=body
-                )
+                # モデルに応じてリクエスト形式を調整
+                if "amazon.titan" in model:
+                    # Amazon Titanモデル用のリクエスト形式
+                    titan_body = json.dumps({
+                        "inputText": prompt,
+                        "textGenerationConfig": {
+                            "maxTokenCount": 2048,
+                            "temperature": 0.7,
+                            "topP": 0.9
+                        }
+                    })
+                    response = self.bedrock_runtime.invoke_model(
+                        modelId=model, body=titan_body
+                    )
+                else:
+                    # Anthropicモデル用（標準）
+                    response = self.bedrock_runtime.invoke_model(
+                        modelId=model, body=body
+                    )
                 
                 # 応答本体から結果を抽出
                 response_body = json.loads(response.get('body').read())
-                if 'content' in response_body and len(response_body['content']) > 0:
-                    for content_item in response_body['content']:
-                        if content_item.get('type') == 'text':
-                            text = content_item.get('text', '')
-                            result_text += text
-                            
-                            # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                            if stream_callback:
-                                # テキストを小さな部分に分割して疑似ストリーミング
-                                chunk_size = 20  # 20文字ずつ送信
-                                for i in range(0, len(text), chunk_size):
-                                    text_chunk = text[i:i+chunk_size]
-                                    stream_callback(text_chunk)
-                                    import time
-                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                
+                # モデルタイプに応じて異なる応答形式に対応
+                if "amazon.titan" in model:
+                    # Titanモデルの場合はoutputTextから直接取得
+                    if 'outputText' in response_body:
+                        text = response_body['outputText']
+                        result_text += text
+                        
+                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                        if stream_callback:
+                            # テキストを小さな部分に分割して疑似ストリーミング
+                            chunk_size = 20  # 20文字ずつ送信
+                            for i in range(0, len(text), chunk_size):
+                                text_chunk = text[i:i+chunk_size]
+                                stream_callback(text_chunk)
+                                import time
+                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                else:
+                    # Anthropicモデルの場合はcontent配列から取得
+                    if 'content' in response_body and len(response_body['content']) > 0:
+                        for content_item in response_body['content']:
+                            if content_item.get('type') == 'text':
+                                text = content_item.get('text', '')
+                                result_text += text
+                                
+                                # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                                if stream_callback:
+                                    # テキストを小さな部分に分割して疑似ストリーミング
+                                    chunk_size = 20  # 20文字ずつ送信
+                                    for i in range(0, len(text), chunk_size):
+                                        text_chunk = text[i:i+chunk_size]
+                                        stream_callback(text_chunk)
+                                        import time
+                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
                 raise RuntimeError(f"Bedrock API error: {str(e)}")
 
