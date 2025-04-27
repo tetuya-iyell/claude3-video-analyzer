@@ -28,6 +28,28 @@ class ScriptGenerator:
         """
         self.analyzer = analyzer
         self.script_prompt = analyzer.default_script_prompt
+        
+    def calculate_expected_length(self, duration_minutes: int) -> int:
+        """動画の長さに基づいて必要な文字数を計算する
+        
+        Args:
+            duration_minutes: 動画の長さ（分）
+            
+        Returns:
+            目標文字数
+        """
+        # 基本計算: 1分あたり200〜250文字
+        # 最小は200文字/分、最大は250文字/分
+        min_chars = duration_minutes * 200
+        max_chars = duration_minutes * 250
+        
+        # 目標文字数は範囲の中間値
+        target_chars = int((min_chars + max_chars) / 2)
+        
+        # 文字数に関するログ出力
+        logger.info(f"動画時間{duration_minutes}分に対する目標文字数: {min_chars}〜{max_chars}文字（目標: {target_chars}文字）")
+        
+        return target_chars
     
     def extract_chapters(self, analysis_text: str) -> List[Dict[str, str]]:
         """章立て解析結果から各章の情報を抽出する
@@ -103,7 +125,7 @@ class ScriptGenerator:
                     modelId=self.analyzer.model,
                     body=json.dumps({
                         "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 2000,
+                        "max_tokens": 5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
                         "messages": [
                             {"role": "user", "content": prompt}
                         ]
@@ -114,7 +136,11 @@ class ScriptGenerator:
                 response_body = json.loads(response.get('body').read())
                 script_content = response_body['content'][0]['text']
                 
-                logger.info(f"章「{chapter['chapter_title']}」の台本生成が完了")
+                # 目標文字数と実際の文字数をチェック
+                target_chars = self.calculate_expected_length(duration_minutes)
+                actual_chars = len(script_content)
+                
+                logger.info(f"章「{chapter['chapter_title']}」の台本生成が完了: 文字数={actual_chars}（目標: {target_chars}）")
             except Exception as e:
                 logger.error(f"台本生成中にエラーが発生: {str(e)}")
                 raise
@@ -123,7 +149,7 @@ class ScriptGenerator:
             try:
                 response = self.analyzer.client.messages.create(
                     model=self.analyzer.model,
-                    max_tokens=2000,
+                    max_tokens=5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
                     messages=[{"role": "user", "content": prompt}]
                 )
                 script_content = response.content[0].text
@@ -605,7 +631,11 @@ class ScriptGenerator:
                         
                     # AIエージェントから受け取ったテキスト結果が文字列の場合の処理
                     if isinstance(improved_script, str) and improved_script:
-                        logger.info(f"AIエージェントから文字列として受け取った改善台本を処理します（長さ: {len(improved_script)}）")
+                        actual_chars = len(improved_script)
+                        # フィードバックの場合は時間パラメータが得られないので、文字数から推定する
+                        estimated_minutes = max(int(actual_chars / 225), 3)  # 225文字/分で推定、最小3分
+                        target_chars = self.calculate_expected_length(estimated_minutes)
+                        logger.info(f"AIエージェントから文字列として受け取った改善台本を処理します（長さ: {actual_chars}文字、推定時間: {estimated_minutes}分、目標: {target_chars}文字）")
                         # この時点で improved_script は文字列型
                 else:
                     # 通常のBedrock基盤モデル呼び出し（リトライ機能付き）
@@ -617,7 +647,7 @@ class ScriptGenerator:
                             modelId=self.analyzer.model,
                             body=json.dumps({
                                 "anthropic_version": "bedrock-2023-05-31",
-                                "max_tokens": 2000,
+                                "max_tokens": 5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
                                 "messages": [
                                     {"role": "user", "content": prompt}
                                 ]
@@ -641,7 +671,7 @@ class ScriptGenerator:
                         modelId=self.analyzer.model,
                         body=json.dumps({
                             "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 2000,
+                            "max_tokens": 5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
                             "messages": [
                                 {"role": "user", "content": prompt}
                             ]
@@ -661,7 +691,7 @@ class ScriptGenerator:
             try:
                 response = self.analyzer.client.messages.create(
                     model=self.analyzer.model,
-                    max_tokens=2000,
+                    max_tokens=5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
                     messages=[{"role": "user", "content": prompt}]
                 )
                 improved_script = response.content[0].text
