@@ -1033,25 +1033,31 @@ class VideoAnalyzer:
             )
 
             try:
-                # Bedrockにストリーミングリクエストを送信
-                response = self.bedrock_runtime.invoke_model_with_response_stream(
+                # ストリーミングAPIが拒否されているため、通常の同期APIを使用
+                logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
+                
+                # 通常のinvoke_modelを使用
+                response = self.bedrock_runtime.invoke_model(
                     modelId=model, body=body
                 )
-
-                # レスポンスストリームを処理
-                for event in response.get("body"):
-                    if "chunk" in event:
-                        chunk = json.loads(event["chunk"]["bytes"])
-                        if (
-                            "type" in chunk
-                            and chunk["type"] == "content_block_delta"
-                            and "delta" in chunk
-                        ):
-                            text = chunk["delta"].get("text", "")
-                            if text:
-                                result_text += text
-                                if stream_callback:
-                                    stream_callback(text)
+                
+                # 応答本体から結果を抽出
+                response_body = json.loads(response.get('body').read())
+                if 'content' in response_body and len(response_body['content']) > 0:
+                    for content_item in response_body['content']:
+                        if content_item.get('type') == 'text':
+                            text = content_item.get('text', '')
+                            result_text += text
+                            
+                            # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                            if stream_callback:
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    stream_callback(text_chunk)
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
                 raise RuntimeError(f"Bedrock API error: {str(e)}")
 
@@ -1134,25 +1140,31 @@ class VideoAnalyzer:
             )
 
             try:
-                # Bedrockにストリーミングリクエストを送信
-                response = self.bedrock_runtime.invoke_model_with_response_stream(
+                # ストリーミングAPIが拒否されているため、通常の同期APIを使用
+                logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
+                
+                # 通常のinvoke_modelを使用
+                response = self.bedrock_runtime.invoke_model(
                     modelId=model, body=body
                 )
-
-                # レスポンスストリームを処理
-                for event in response.get("body"):
-                    if "chunk" in event:
-                        chunk = json.loads(event["chunk"]["bytes"])
-                        if (
-                            "type" in chunk
-                            and chunk["type"] == "content_block_delta"
-                            and "delta" in chunk
-                        ):
-                            text = chunk["delta"].get("text", "")
-                            if text:
-                                result_text += text
-                                if stream_callback:
-                                    stream_callback(text)
+                
+                # 応答本体から結果を抽出
+                response_body = json.loads(response.get('body').read())
+                if 'content' in response_body and len(response_body['content']) > 0:
+                    for content_item in response_body['content']:
+                        if content_item.get('type') == 'text':
+                            text = content_item.get('text', '')
+                            result_text += text
+                            
+                            # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                            if stream_callback:
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    stream_callback(text_chunk)
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
                 raise RuntimeError(f"Bedrock API error: {str(e)}")
 

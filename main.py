@@ -176,25 +176,28 @@ def analyze_video():
                             }
                         )
 
-                        # Bedrockにストリーミングリクエストを送信
-                        response = (
-                            analyzer.bedrock_runtime.invoke_model_with_response_stream(
-                                modelId=analyzer.model, body=body
-                            )
+                        # ストリーミングAPIが拒否されているため、通常の同期APIを使用
+                        logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
+                        
+                        # 通常のinvoke_modelを使用
+                        response = analyzer.bedrock_runtime.invoke_model(
+                            modelId=analyzer.model, body=body
                         )
-
-                        # レスポンスストリームを処理
-                        for event in response.get("body"):
-                            if "chunk" in event:
-                                chunk = json.loads(event["chunk"]["bytes"])
-                                if (
-                                    "type" in chunk
-                                    and chunk["type"] == "content_block_delta"
-                                    and "delta" in chunk
-                                ):
-                                    text = chunk["delta"].get("text", "")
-                                    if text:
-                                        yield f"data: {json.dumps({'text': text})}\n\n"
+                        
+                        # 応答本体から結果を抽出
+                        response_body = json.loads(response.get('body').read())
+                        if 'content' in response_body and len(response_body['content']) > 0:
+                            for content_item in response_body['content']:
+                                if content_item.get('type') == 'text':
+                                    text = content_item.get('text', '')
+                                    
+                                    # テキストを小さな部分に分割して疑似ストリーミング
+                                    chunk_size = 20  # 20文字ずつ送信
+                                    for i in range(0, len(text), chunk_size):
+                                        text_chunk = text[i:i+chunk_size]
+                                        yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                        import time
+                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"
@@ -308,24 +311,31 @@ def analyze_video_with_chapters():
                         }
                     )
 
-                    response = (
-                        analyzer.bedrock_runtime.invoke_model_with_response_stream(
-                            modelId=analyzer.model, body=body
-                        )
+                    # ストリーミングAPIが拒否されているため、通常の同期APIを使用
+                    logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
+                    
+                    # 通常のinvoke_modelを使用
+                    response = analyzer.bedrock_runtime.invoke_model(
+                        modelId=analyzer.model, body=body
                     )
-
-                    for event in response.get("body"):
-                        if "chunk" in event:
-                            chunk = json.loads(event["chunk"]["bytes"])
-                            if (
-                                "type" in chunk
-                                and chunk["type"] == "content_block_delta"
-                                and "delta" in chunk
-                            ):
-                                text = chunk["delta"].get("text", "")
-                                if text:
-                                    result_text += text
-                                    yield f"data: {json.dumps({'text': text})}\n\n"
+                    
+                    # 応答本体から結果を抽出
+                    response_body = json.loads(response.get('body').read())
+                    result_text = ""
+                    
+                    if 'content' in response_body and len(response_body['content']) > 0:
+                        for content_item in response_body['content']:
+                            if content_item.get('type') == 'text':
+                                text = content_item.get('text', '')
+                                result_text += text
+                                
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"
