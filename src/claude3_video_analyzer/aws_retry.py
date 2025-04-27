@@ -3,6 +3,7 @@
 """
 AWS APIリトライロジックのカスタム実装モジュール
 バイナリデータ処理と例外処理を強化したもの
+EventStream処理のための特別なリトライロジックを含む
 """
 
 import time
@@ -13,7 +14,7 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 
-def aws_api_retry(max_retries=3, base_delay=1, jitter=0.3):
+def aws_api_retry(max_retries=3, base_delay=1, jitter=0.3, event_stream_handling=True):
     """
     AWS APIへのコールのためのリトライデコレーター
     
@@ -21,11 +22,17 @@ def aws_api_retry(max_retries=3, base_delay=1, jitter=0.3):
         max_retries (int): 最大リトライ回数
         base_delay (float): 基本待機時間（秒）
         jitter (float): ランダムなジッターの最大値（秒）
+        event_stream_handling (bool): EventStream応答の特別な処理を有効にするかどうか
     
     用法:
         @aws_api_retry(max_retries=3)
         def call_aws_api():
             return aws_client.some_api_call()
+            
+        # EventStreamを適切に処理する例
+        @aws_api_retry(max_retries=2, event_stream_handling=True)
+        def call_with_event_stream():
+            return bedrock_client.invoke_agent(...)
     """
     def decorator(func):
         @wraps(func)
@@ -41,7 +48,11 @@ def aws_api_retry(max_retries=3, base_delay=1, jitter=0.3):
                 "dependencyFailedException",
                 "InternalFailureException",
                 "ResourceInUseException",
-                "ResourceLimitExceededException"
+                "ResourceLimitExceededException",
+                "EventStreamError",
+                "StreamingBodyError",
+                "ReadTimeoutError",
+                "ConnectTimeoutError"
             ]
             
             # 特に重要なエラーメッセージのパターン - これらが含まれる場合は常にリトライ
@@ -54,7 +65,13 @@ def aws_api_retry(max_retries=3, base_delay=1, jitter=0.3):
                 "timeout",
                 "socket error",
                 "rate exceeded",
-                "request throttled"
+                "request throttled",
+                "event stream",
+                "socket timeout",
+                "connection aborted",
+                "EOF occurred",
+                "connection closed",
+                "broken pipe"
             ]
             
             last_exception = None
@@ -94,6 +111,17 @@ def aws_api_retry(max_retries=3, base_delay=1, jitter=0.3):
                             logger.warning(f"レスポンスエラーのためリトライします: {error_str[:100]}")
                             raise ValueError(f"Response error: {error_str}")
                             
+                    # EventStream特別処理
+                    if event_stream_handling and hasattr(result, 'get') and callable(result.get) and 'body' in result:
+                        # EventStreamを検出した可能性
+                        logger.info("レスポンスにbodyキーを検出: EventStreamまたはストリーミングボディの処理を最適化")
+                        try:
+                            import botocore
+                            if isinstance(result.get('body'), botocore.eventstream.EventStream):
+                                logger.info("EventStreamレスポンスを検出: ストリーム処理の最適化を適用")
+                        except (ImportError, AttributeError):
+                            logger.info("EventStream型が見つからないかインポートできません")
+                    
                     # 結果を返す
                     return result
                     

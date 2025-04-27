@@ -590,7 +590,10 @@ def bedrock_submit_feedback():
     feedback_text = data['feedback']
     is_approved = data['is_approved']
     
-    logging.info(f"フィードバック受信: chapter_index={chapter_index}, is_approved={is_approved}, feedback長さ={len(feedback_text)}")
+    # 動画時間パラメータを取得（設定されていなければデフォルト3分）
+    duration_minutes = int(data.get('duration_minutes', 3))
+    
+    logging.info(f"フィードバック受信: chapter_index={chapter_index}, is_approved={is_approved}, feedback長さ={len(feedback_text)}, duration_minutes={duration_minutes}")
     
     # セッションIDの確認
     if 'session_id' not in session:
@@ -634,28 +637,109 @@ def bedrock_submit_feedback():
             script_data['feedback'].append(feedback_text)
             logging.info(f"フィードバックを追加: chapter_index={chapter_index}, フィードバック数={len(script_data['feedback'])}")
             
+            # 詳細なログ:改善前の状態
+            logging.info(f"台本改善前の状態:")
+            logging.info(f"  chapter_index: {chapter_index}")
+            logging.info(f"  status: {script_data['status']}")
+            logging.info(f"  script_content文字数: {len(script_data['script_content'])}")
+            logging.info(f"  'improved_script'キー: {'存在する' if 'improved_script' in script_data else '存在しない'}")
+            if 'improved_script' in script_data:
+                logging.info(f"  既存のimproved_script文字数: {len(script_data['improved_script'])}")
+                # 次の改善リクエストで問題になるかもしれないので削除しておく
+                del script_data['improved_script']
+                logging.info(f"  既存のimproved_scriptを削除しました")
+            
             # フィードバックに基づいて台本を改善
+            logging.info(f"台本改善処理を開始: フィードバック長さ={len(feedback_text)}")
+            
+            # 台本改善時に動画時間パラメータを渡すための処理
+            # スクリプトデータに動画時間を設定（改善関数内で使用可能にする）
+            script_data['duration_minutes'] = duration_minutes
+            
             improved_script_data = script_generator.improve_script(script_data, feedback_text)
+            logging.info(f"台本改善処理が完了: 結果タイプ={type(improved_script_data)}")
             
             # 明示的に improved_script キーを設定
             # 改善されたスクリプトが辞書型か文字列型かを確認
+            logging.info(f"改善スクリプトデータの詳細処理:")
+            logging.info(f"  データ型: {type(improved_script_data)}")
+            if isinstance(improved_script_data, dict):
+                logging.info(f"  辞書型の場合のキー: {list(improved_script_data.keys())}")
+                
+            # 目標文字数を計算
+            expected_chars = script_generator.calculate_expected_length(duration_minutes)
+            
             if isinstance(improved_script_data, dict) and 'script_content' in improved_script_data:
                 # 辞書型の場合は script_content キーを使用
-                script_data['improved_script'] = improved_script_data['script_content']
-                logging.info(f"台本の改善が完了しました（辞書型）。improved_script キーを設定しました。長さ={len(script_data['improved_script'])}")
+                script_content = improved_script_data['script_content']
+                actual_chars = len(script_content)
+                logging.info(f"台本の改善が完了しました（辞書型）。長さ={actual_chars}")
+                
+                # 文字数チェック - 目標文字数に達していない場合は自動補完
+                if actual_chars < expected_chars:
+                    logging.info(f"文字数不足のため補完処理を開始: 現在={actual_chars}, 目標={expected_chars}")
+                    script_content = script_generator.ensure_minimum_length(script_content, expected_chars, script_data)
+                    actual_chars = len(script_content)
+                    logging.info(f"補完処理後の文字数: {actual_chars}文字")
+                
+                # 処理済みのcontent_scriptを設定
+                script_data['improved_script'] = script_content
+                logging.info(f"台本の改善と補完が完了しました。improved_script キーを設定しました。最終長さ={len(script_data['improved_script'])}")
+                
+                # 最終的な文字数チェックとログ出力
+                actual_chars = len(script_data['improved_script'])
+                logging.info(f"改善台本の文字数チェック: 実際={actual_chars}文字, 期待={expected_chars}文字")
+                if actual_chars < expected_chars:
+                    logging.warning(f"全ての処理後も目標文字数に達していません: 目標={expected_chars}, 実際={actual_chars}")
+                else:
+                    logging.info(f"目標文字数を達成しました: 目標={expected_chars}, 実際={actual_chars}")
+                
             elif isinstance(improved_script_data, str):
                 # 文字列型の場合はそのまま使用
-                script_data['improved_script'] = improved_script_data
-                logging.info(f"台本の改善が完了しました（文字列型）。improved_script キーを設定しました。長さ={len(script_data['improved_script'])}")
+                script_content = improved_script_data
+                actual_chars = len(script_content)
+                logging.info(f"台本の改善が完了しました（文字列型）。長さ={actual_chars}")
+                
+                # 文字数チェック - 目標文字数に達していない場合は自動補完
+                if actual_chars < expected_chars:
+                    logging.info(f"文字数不足のため補完処理を開始: 現在={actual_chars}, 目標={expected_chars}")
+                    script_content = script_generator.ensure_minimum_length(script_content, expected_chars, script_data)
+                    actual_chars = len(script_content)
+                    logging.info(f"補完処理後の文字数: {actual_chars}文字")
+                
+                # 処理済みのcontent_scriptを設定
+                script_data['improved_script'] = script_content
+                logging.info(f"台本の改善と補完が完了しました。improved_script キーを設定しました。最終長さ={len(script_data['improved_script'])}")
+                
+                # 最終的な文字数チェックとログ出力
+                actual_chars = len(script_data['improved_script'])
+                logging.info(f"改善台本の文字数チェック: 実際={actual_chars}文字, 期待={expected_chars}文字")
+                if actual_chars < expected_chars:
+                    logging.warning(f"全ての処理後も目標文字数に達していません: 目標={expected_chars}, 実際={actual_chars}")
+                else:
+                    logging.info(f"目標文字数を達成しました: 目標={expected_chars}, 実際={actual_chars}")
+                
             else:
                 # それ以外の型の場合はエラーログを出力
                 logging.error(f"台本の改善に失敗: 予期しないデータ型 {type(improved_script_data)}")
+                logging.error(f"改善結果のダンプ: {str(improved_script_data)[:200]}...")
                 # エラー対策としてスクリプトの内容をそのままコピー
                 script_data['improved_script'] = script_data['script_content']
                 script_data['improved_script'] += "\n\n（フィードバックによる改善に失敗しました。手動で編集してください）"
+                logging.info(f"エラー時のフォールバック台本を設定しました。長さ={len(script_data['improved_script'])}")
         
         # 変更を保存
         scripts[chapter_index] = script_data
+        
+        # 変更内容のより詳細なログ出力
+        logging.info(f"台本の更新内容: chapter_index={chapter_index}, status={script_data['status']}")
+        if 'improved_script' in script_data:
+            logging.info(f"台本の改善データあり: 文字数={len(script_data['improved_script'])}")
+        else:
+            logging.info(f"台本の改善データなし")
+            
+        if 'feedback' in script_data:
+            logging.info(f"台本のフィードバック: {len(script_data['feedback'])}件")
         
         # ファイルに保存
         with open(scripts_file, 'w', encoding='utf-8') as f:
@@ -738,10 +822,23 @@ def bedrock_apply_improvement():
         
         # 更新後は改善台本キーを削除
         del script_data['improved_script']
+        
+        # 安全のため、_original_contentも削除（フロントエンドで保存されている可能性がある）
+        if '_original_content' in script_data:
+            del script_data['_original_content']
+            logging.info(f"台本更新後、_original_content キーを削除しました")
+            
         logging.info(f"台本更新後、improved_script キーを削除しました")
         
         # 変更を保存
         scripts[chapter_index] = script_data
+        
+        # 詳細なデバッグ情報を出力
+        logging.info(f"台本を改善版で更新します - 詳細状態:")
+        logging.info(f"  chapter_index: {chapter_index}")
+        logging.info(f"  更新後status: {script_data['status']}")
+        logging.info(f"  script_content文字数: {len(script_data['script_content'])}")
+        logging.info(f"  'improved_script'キーの削除: 完了")
         
         # ファイルに保存
         with open(scripts_file, 'w', encoding='utf-8') as f:
