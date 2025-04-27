@@ -181,95 +181,44 @@ def analyze_video():
                         # ストリーミングAPIが拒否されているため、通常の同期APIを使用
                         logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                         
-                        # モデルに応じてリクエスト形式を調整
-                        model = analyzer.model
-                        if "amazon.titan-text" in model:
-                            # Amazon Titan Textモデル用のリクエスト形式（テキストのみ）
-                            titan_body = json.dumps({
-                                "inputText": prompt,
-                                "textGenerationConfig": {
-                                    "maxTokenCount": 2048,
-                                    "temperature": 0.7,
-                                    "topP": 0.9
-                                }
-                            })
-                            response = analyzer.bedrock_runtime.invoke_model(
-                                modelId=model, body=titan_body
-                            )
-                        elif "amazon.nova" in model:
-                            # Amazon Novaモデル用のリクエスト形式（マルチモーダル：画像と動画対応）
-                            nova_body = json.dumps({
-                                "contentType": "multipart/form-data",
-                                "parts": [
-                                    {
-                                        "contentType": "application/json",
-                                        "data": json.dumps({
-                                            "modelParams": {
-                                                "maxTokens": 2048,
-                                                "temperature": 0.7,
-                                                "topP": 0.9
-                                            },
-                                            "prompt": prompt
-                                        })
-                                    }
-                                ] + [
-                                    {
-                                        "contentType": "image/jpeg",
-                                        "data": frame
-                                    } for frame in base64_frames
-                                ]
-                            })
-                            response = analyzer.bedrock_runtime.invoke_model(
-                                modelId=model, body=nova_body
-                            )
-                        else:
+                        # Claude 3.5 Sonnetモデル用のリクエスト形式（仕様通り）
+                        try:
                             # Anthropicモデル用（標準）
                             response = analyzer.bedrock_runtime.invoke_model(
-                                modelId=model, body=body
+                                modelId=analyzer.model, body=body
                             )
+                        except Exception as e:
+                            error_msg = str(e)
+                            if "AccessDeniedException" in error_msg and "is not authorized to perform" in error_msg:
+                                # IAM権限エラーの場合、詳細なエラーメッセージを提供
+                                logger.error("AWS IAM権限エラー: Bedrock APIへのアクセス権限がありません")
+                                logger.error("必要な権限: bedrock:InvokeModel")
+                                logger.error("AWS管理者に以下の権限を要求してください:")
+                                logger.error("1. AWS IAM コンソールでユーザーのポリシーを確認")
+                                logger.error("2. Bedrock APIへのアクセス権限を追加 (bedrock:InvokeModel)")
+                                logger.error("3. 特に anthropic.claude-3-5-sonnet-20240620-v1:0 へのアクセスを確保")
+                                yield f"data: {json.dumps({'error': 'AWS Bedrock APIアクセス権限エラー: このアプリケーションはAWS IAM権限の設定が必要です'})}\n\n"
+                                return
+                            else:
+                                # その他のエラーはそのまま伝播
+                                raise
                         
                         # 応答本体から結果を抽出
                         response_body = json.loads(response.get('body').read())
                         
-                        # モデルタイプに応じて異なる応答形式に対応
-                        if "amazon.titan-text" in model:
-                            # Titan Textモデルの場合はoutputTextから直接取得
-                            if 'outputText' in response_body:
-                                text = response_body['outputText']
-                                
-                                # テキストを小さな部分に分割して疑似ストリーミング
-                                chunk_size = 20  # 20文字ずつ送信
-                                for i in range(0, len(text), chunk_size):
-                                    text_chunk = text[i:i+chunk_size]
-                                    yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                    import time
-                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                        elif "amazon.nova" in model:
-                            # Nova (マルチモーダル) モデルの場合
-                            if 'output' in response_body and 'text' in response_body['output']:
-                                text = response_body['output']['text']
-                                
-                                # テキストを小さな部分に分割して疑似ストリーミング
-                                chunk_size = 20  # 20文字ずつ送信
-                                for i in range(0, len(text), chunk_size):
-                                    text_chunk = text[i:i+chunk_size]
-                                    yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                    import time
-                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                        else:
-                            # Anthropicモデルの場合はcontent配列から取得
-                            if 'content' in response_body and len(response_body['content']) > 0:
-                                for content_item in response_body['content']:
-                                    if content_item.get('type') == 'text':
-                                        text = content_item.get('text', '')
-                                        
-                                        # テキストを小さな部分に分割して疑似ストリーミング
-                                        chunk_size = 20  # 20文字ずつ送信
-                                        for i in range(0, len(text), chunk_size):
-                                            text_chunk = text[i:i+chunk_size]
-                                            yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                            import time
-                                            time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                        # Claudeモデル専用の応答処理（仕様に従って）
+                        if 'content' in response_body and len(response_body['content']) > 0:
+                            for content_item in response_body['content']:
+                                if content_item.get('type') == 'text':
+                                    text = content_item.get('text', '')
+                                    
+                                    # テキストを小さな部分に分割して疑似ストリーミング
+                                    chunk_size = 20  # 20文字ずつ送信
+                                    for i in range(0, len(text), chunk_size):
+                                        text_chunk = text[i:i+chunk_size]
+                                        yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                        import time
+                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"
@@ -386,99 +335,46 @@ def analyze_video_with_chapters():
                     # ストリーミングAPIが拒否されているため、通常の同期APIを使用
                     logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                     
-                    # モデルに応じてリクエスト形式を調整
-                    model = analyzer.model
-                    if "amazon.titan-text" in model:
-                        # Amazon Titan Textモデル用のリクエスト形式（テキストのみ）
-                        titan_body = json.dumps({
-                            "inputText": prompt,
-                            "textGenerationConfig": {
-                                "maxTokenCount": 2048,
-                                "temperature": 0.7,
-                                "topP": 0.9
-                            }
-                        })
-                        response = analyzer.bedrock_runtime.invoke_model(
-                            modelId=model, body=titan_body
-                        )
-                    elif "amazon.nova" in model:
-                        # Amazon Novaモデル用のリクエスト形式（マルチモーダル：画像と動画対応）
-                        nova_body = json.dumps({
-                            "contentType": "multipart/form-data",
-                            "parts": [
-                                {
-                                    "contentType": "application/json",
-                                    "data": json.dumps({
-                                        "modelParams": {
-                                            "maxTokens": 2048,
-                                            "temperature": 0.7,
-                                            "topP": 0.9
-                                        },
-                                        "prompt": prompt
-                                    })
-                                }
-                            ] + [
-                                {
-                                    "contentType": "image/jpeg",
-                                    "data": frame
-                                } for frame in base64_frames
-                            ]
-                        })
-                        response = analyzer.bedrock_runtime.invoke_model(
-                            modelId=model, body=nova_body
-                        )
-                    else:
+                    # Claude 3.5 Sonnetモデル用のリクエスト形式（仕様通り）
+                    try:
                         # Anthropicモデル用（標準）
                         response = analyzer.bedrock_runtime.invoke_model(
-                            modelId=model, body=body
+                            modelId=analyzer.model, body=body
                         )
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "AccessDeniedException" in error_msg and "is not authorized to perform" in error_msg:
+                            # IAM権限エラーの場合、詳細なエラーメッセージを提供
+                            logger.error("AWS IAM権限エラー: Bedrock APIへのアクセス権限がありません")
+                            logger.error("必要な権限: bedrock:InvokeModel")
+                            logger.error("AWS管理者に以下の権限を要求してください:")
+                            logger.error("1. AWS IAM コンソールでユーザーのポリシーを確認")
+                            logger.error("2. Bedrock APIへのアクセス権限を追加 (bedrock:InvokeModel)")
+                            logger.error("3. 特に anthropic.claude-3-5-sonnet-20240620-v1:0 へのアクセスを確保")
+                            yield f"data: {json.dumps({'error': 'AWS Bedrock APIアクセス権限エラー: このアプリケーションはAWS IAM権限の設定が必要です'})}\n\n"
+                            return
+                        else:
+                            # その他のエラーはそのまま伝播
+                            raise
                     
                     # 応答本体から結果を抽出
                     response_body = json.loads(response.get('body').read())
                     result_text = ""
                     
-                    # モデルタイプに応じて異なる応答形式に対応
-                    if "amazon.titan-text" in model:
-                        # Titan Textモデルの場合はoutputTextから直接取得
-                        if 'outputText' in response_body:
-                            text = response_body['outputText']
-                            result_text += text
-                            
-                            # テキストを小さな部分に分割して疑似ストリーミング
-                            chunk_size = 20  # 20文字ずつ送信
-                            for i in range(0, len(text), chunk_size):
-                                text_chunk = text[i:i+chunk_size]
-                                yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                import time
-                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                    elif "amazon.nova" in model:
-                        # Nova (マルチモーダル) モデルの場合
-                        if 'output' in response_body and 'text' in response_body['output']:
-                            text = response_body['output']['text']
-                            result_text += text
-                            
-                            # テキストを小さな部分に分割して疑似ストリーミング
-                            chunk_size = 20  # 20文字ずつ送信
-                            for i in range(0, len(text), chunk_size):
-                                text_chunk = text[i:i+chunk_size]
-                                yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                import time
-                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                    else:
-                        # Anthropicモデルの場合はcontent配列から取得
-                        if 'content' in response_body and len(response_body['content']) > 0:
-                            for content_item in response_body['content']:
-                                if content_item.get('type') == 'text':
-                                    text = content_item.get('text', '')
-                                    result_text += text
-                                    
-                                    # テキストを小さな部分に分割して疑似ストリーミング
-                                    chunk_size = 20  # 20文字ずつ送信
-                                    for i in range(0, len(text), chunk_size):
-                                        text_chunk = text[i:i+chunk_size]
-                                        yield f"data: {json.dumps({'text': text_chunk})}\n\n"
-                                        import time
-                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                    # Claudeモデル専用の応答処理（仕様に従って）
+                    if 'content' in response_body and len(response_body['content']) > 0:
+                        for content_item in response_body['content']:
+                            if content_item.get('type') == 'text':
+                                text = content_item.get('text', '')
+                                result_text += text
+                                
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    yield f"data: {json.dumps({'text': text_chunk})}\n\n"
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
 
                 # 完了通知
                 yield f"data: {json.dumps({'complete': True})}\n\n"

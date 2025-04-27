@@ -868,16 +868,13 @@ class VideoAnalyzer:
         # モードに応じたモデルIDを環境変数から取得
         if self.use_bedrock:
             # Bedrockモードの場合はBEDROCK_MODEL_IDを使用
-            # Amazon Novaモデルをデフォルトで使用（アクセス制限の少ないAWSネイティブモデルで画像と動画をサポート）
+            # 仕様に従いClaude 3.5 Sonnetを使用する
             default_model = (
-                "amazon.nova-lite-v1:0"  # フォールバック値（Amazon Nova Lite - 画像と動画に対応）
+                "anthropic.claude-3-5-sonnet-20240620-v1:0"  # 仕様通りClaudeモデルをデフォルト値に戻す
             )
             self.model = os.getenv("BEDROCK_MODEL_ID", default_model)
-            # 現在のアカウントで許可されたAmazon Novaモデルを使用
-            if "anthropic" in self.model.lower():
-                logger.warning(f"Anthropicモデル {self.model} へのアクセスが拒否されている可能性があるため、Amazon Novaモデルにフォールバックします")
-                self.model = default_model
-            print(f"Bedrock mode: Using model {self.model}")
+            # IAMのアクセス権限がない場合は明確なエラーメッセージを表示するための準備
+            print(f"Bedrock mode: Using model {self.model} (IAM権限が必要です)")
         else:
             # Anthropicモードの場合はANTHROPIC_MODEL_IDを使用
             default_model = "claude-3-sonnet-20240229"  # フォールバック値
@@ -1042,103 +1039,46 @@ class VideoAnalyzer:
                 logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                 
                 # 通常のinvoke_modelを使用
-                # モデルに応じてリクエスト形式を調整
-                if "amazon.titan-text" in model:
-                    # Amazon Titan Textモデル用のリクエスト形式（テキストのみ）
-                    titan_body = json.dumps({
-                        "inputText": prompt,
-                        "textGenerationConfig": {
-                            "maxTokenCount": 2048,
-                            "temperature": 0.7,
-                            "topP": 0.9
-                        }
-                    })
-                    response = self.bedrock_runtime.invoke_model(
-                        modelId=model, body=titan_body
-                    )
-                elif "amazon.nova" in model:
-                    # Amazon Novaモデル用のリクエスト形式（マルチモーダル：画像と動画対応）
-                    nova_body = json.dumps({
-                        "contentType": "multipart/form-data",
-                        "parts": [
-                            {
-                                "contentType": "application/json",
-                                "data": json.dumps({
-                                    "modelParams": {
-                                        "maxTokens": 2048,
-                                        "temperature": 0.7,
-                                        "topP": 0.9
-                                    },
-                                    "prompt": prompt
-                                })
-                            }
-                        ] + [
-                            {
-                                "contentType": "image/jpeg",
-                                "data": frame
-                            } for frame in base64_frames
-                        ]
-                    })
-                    response = self.bedrock_runtime.invoke_model(
-                        modelId=model, body=nova_body
-                    )
-                else:
-                    # Anthropicモデル用（標準）
+                # Claude 3.5 Sonnetモデル用のリクエスト形式に戻す
+                try:
+                    # Anthropicモデル用（標準）- 仕様通りClaudeモデルを使用
                     response = self.bedrock_runtime.invoke_model(
                         modelId=model, body=body
                     )
+                except Exception as e:
+                    error_msg = str(e)
+                    if "AccessDeniedException" in error_msg and "is not authorized to perform" in error_msg:
+                        # IAM権限エラーの場合、詳細なエラーメッセージを提供
+                        logger.error("AWS IAM権限エラー: Bedrock APIへのアクセス権限がありません")
+                        logger.error("必要な権限: bedrock:InvokeModel")
+                        logger.error("AWS管理者に以下の権限を要求してください:")
+                        logger.error("1. AWS IAM コンソールでユーザーのポリシーを確認")
+                        logger.error("2. Bedrock APIへのアクセス権限を追加 (bedrock:InvokeModel)")
+                        logger.error("3. 特に anthropic.claude-3-5-sonnet-20240620-v1:0 へのアクセスを確保")
+                        raise ConnectionError("AWS Bedrock API権限エラー: AWS IAM権限の設定が必要です") from e
+                    else:
+                        # その他のエラーはそのまま伝播
+                        raise
                 
                 # 応答本体から結果を抽出
                 response_body = json.loads(response.get('body').read())
                 
-                # モデルタイプに応じて異なる応答形式に対応
-                if "amazon.titan-text" in model:
-                    # Titan Textモデルの場合はoutputTextから直接取得
-                    if 'outputText' in response_body:
-                        text = response_body['outputText']
-                        result_text += text
-                        
-                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                        if stream_callback:
-                            # テキストを小さな部分に分割して疑似ストリーミング
-                            chunk_size = 20  # 20文字ずつ送信
-                            for i in range(0, len(text), chunk_size):
-                                text_chunk = text[i:i+chunk_size]
-                                stream_callback(text_chunk)
-                                import time
-                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                elif "amazon.nova" in model:
-                    # Nova (マルチモーダル) モデルの場合
-                    if 'output' in response_body and 'text' in response_body['output']:
-                        text = response_body['output']['text']
-                        result_text += text
-                        
-                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                        if stream_callback:
-                            # テキストを小さな部分に分割して疑似ストリーミング
-                            chunk_size = 20  # 20文字ずつ送信
-                            for i in range(0, len(text), chunk_size):
-                                text_chunk = text[i:i+chunk_size]
-                                stream_callback(text_chunk)
-                                import time
-                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                else:
-                    # Anthropicモデルの場合はcontent配列から取得
-                    if 'content' in response_body and len(response_body['content']) > 0:
-                        for content_item in response_body['content']:
-                            if content_item.get('type') == 'text':
-                                text = content_item.get('text', '')
-                                result_text += text
-                                
-                                # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                                if stream_callback:
-                                    # テキストを小さな部分に分割して疑似ストリーミング
-                                    chunk_size = 20  # 20文字ずつ送信
-                                    for i in range(0, len(text), chunk_size):
-                                        text_chunk = text[i:i+chunk_size]
-                                        stream_callback(text_chunk)
-                                        import time
-                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                # Anthropicモデル用のレスポンス処理（仕様に従いClaudeモデルのみサポート）
+                if 'content' in response_body and len(response_body['content']) > 0:
+                    for content_item in response_body['content']:
+                        if content_item.get('type') == 'text':
+                            text = content_item.get('text', '')
+                            result_text += text
+                            
+                            # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                            if stream_callback:
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    stream_callback(text_chunk)
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
                 raise RuntimeError(f"Bedrock API error: {str(e)}")
 
@@ -1225,103 +1165,46 @@ class VideoAnalyzer:
                 logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                 
                 # 通常のinvoke_modelを使用
-                # モデルに応じてリクエスト形式を調整
-                if "amazon.titan-text" in model:
-                    # Amazon Titan Textモデル用のリクエスト形式（テキストのみ）
-                    titan_body = json.dumps({
-                        "inputText": prompt,
-                        "textGenerationConfig": {
-                            "maxTokenCount": 2048,
-                            "temperature": 0.7,
-                            "topP": 0.9
-                        }
-                    })
-                    response = self.bedrock_runtime.invoke_model(
-                        modelId=model, body=titan_body
-                    )
-                elif "amazon.nova" in model:
-                    # Amazon Novaモデル用のリクエスト形式（マルチモーダル：画像と動画対応）
-                    nova_body = json.dumps({
-                        "contentType": "multipart/form-data",
-                        "parts": [
-                            {
-                                "contentType": "application/json",
-                                "data": json.dumps({
-                                    "modelParams": {
-                                        "maxTokens": 2048,
-                                        "temperature": 0.7,
-                                        "topP": 0.9
-                                    },
-                                    "prompt": prompt
-                                })
-                            }
-                        ] + [
-                            {
-                                "contentType": "image/jpeg",
-                                "data": frame
-                            } for frame in base64_frames
-                        ]
-                    })
-                    response = self.bedrock_runtime.invoke_model(
-                        modelId=model, body=nova_body
-                    )
-                else:
-                    # Anthropicモデル用（標準）
+                # Claude 3.5 Sonnetモデル用のリクエスト形式に戻す
+                try:
+                    # Anthropicモデル用（標準）- 仕様通りClaudeモデルを使用
                     response = self.bedrock_runtime.invoke_model(
                         modelId=model, body=body
                     )
+                except Exception as e:
+                    error_msg = str(e)
+                    if "AccessDeniedException" in error_msg and "is not authorized to perform" in error_msg:
+                        # IAM権限エラーの場合、詳細なエラーメッセージを提供
+                        logger.error("AWS IAM権限エラー: Bedrock APIへのアクセス権限がありません")
+                        logger.error("必要な権限: bedrock:InvokeModel")
+                        logger.error("AWS管理者に以下の権限を要求してください:")
+                        logger.error("1. AWS IAM コンソールでユーザーのポリシーを確認")
+                        logger.error("2. Bedrock APIへのアクセス権限を追加 (bedrock:InvokeModel)")
+                        logger.error("3. 特に anthropic.claude-3-5-sonnet-20240620-v1:0 へのアクセスを確保")
+                        raise ConnectionError("AWS Bedrock API権限エラー: AWS IAM権限の設定が必要です") from e
+                    else:
+                        # その他のエラーはそのまま伝播
+                        raise
                 
                 # 応答本体から結果を抽出
                 response_body = json.loads(response.get('body').read())
                 
-                # モデルタイプに応じて異なる応答形式に対応
-                if "amazon.titan-text" in model:
-                    # Titan Textモデルの場合はoutputTextから直接取得
-                    if 'outputText' in response_body:
-                        text = response_body['outputText']
-                        result_text += text
-                        
-                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                        if stream_callback:
-                            # テキストを小さな部分に分割して疑似ストリーミング
-                            chunk_size = 20  # 20文字ずつ送信
-                            for i in range(0, len(text), chunk_size):
-                                text_chunk = text[i:i+chunk_size]
-                                stream_callback(text_chunk)
-                                import time
-                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                elif "amazon.nova" in model:
-                    # Nova (マルチモーダル) モデルの場合
-                    if 'output' in response_body and 'text' in response_body['output']:
-                        text = response_body['output']['text']
-                        result_text += text
-                        
-                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                        if stream_callback:
-                            # テキストを小さな部分に分割して疑似ストリーミング
-                            chunk_size = 20  # 20文字ずつ送信
-                            for i in range(0, len(text), chunk_size):
-                                text_chunk = text[i:i+chunk_size]
-                                stream_callback(text_chunk)
-                                import time
-                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
-                else:
-                    # Anthropicモデルの場合はcontent配列から取得
-                    if 'content' in response_body and len(response_body['content']) > 0:
-                        for content_item in response_body['content']:
-                            if content_item.get('type') == 'text':
-                                text = content_item.get('text', '')
-                                result_text += text
-                                
-                                # コールバックがあれば呼び出し (ストリーミングをシミュレート)
-                                if stream_callback:
-                                    # テキストを小さな部分に分割して疑似ストリーミング
-                                    chunk_size = 20  # 20文字ずつ送信
-                                    for i in range(0, len(text), chunk_size):
-                                        text_chunk = text[i:i+chunk_size]
-                                        stream_callback(text_chunk)
-                                        import time
-                                        time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                # Anthropicモデル用のレスポンス処理（仕様に従いClaudeモデルのみサポート）
+                if 'content' in response_body and len(response_body['content']) > 0:
+                    for content_item in response_body['content']:
+                        if content_item.get('type') == 'text':
+                            text = content_item.get('text', '')
+                            result_text += text
+                            
+                            # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                            if stream_callback:
+                                # テキストを小さな部分に分割して疑似ストリーミング
+                                chunk_size = 20  # 20文字ずつ送信
+                                for i in range(0, len(text), chunk_size):
+                                    text_chunk = text[i:i+chunk_size]
+                                    stream_callback(text_chunk)
+                                    import time
+                                    time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
                 raise RuntimeError(f"Bedrock API error: {str(e)}")
 
