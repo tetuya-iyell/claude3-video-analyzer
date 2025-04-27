@@ -868,14 +868,14 @@ class VideoAnalyzer:
         # モードに応じたモデルIDを環境変数から取得
         if self.use_bedrock:
             # Bedrockモードの場合はBEDROCK_MODEL_IDを使用
-            # Amazon Titanモデルをデフォルトで使用（アクセス制限の少ないAWSネイティブモデル）
+            # Amazon Novaモデルをデフォルトで使用（アクセス制限の少ないAWSネイティブモデルで画像と動画をサポート）
             default_model = (
-                "amazon.titan-text-express-v1"  # フォールバック値（Amazon Titan Text Express）
+                "amazon.nova-lite-v1:0"  # フォールバック値（Amazon Nova Lite - 画像と動画に対応）
             )
             self.model = os.getenv("BEDROCK_MODEL_ID", default_model)
-            # 現在のアカウントで許可されたAmazon Titanモデルを使用
+            # 現在のアカウントで許可されたAmazon Novaモデルを使用
             if "anthropic" in self.model.lower():
-                logger.warning(f"Anthropicモデル {self.model} へのアクセスが拒否されている可能性があるため、Amazon Titanモデルにフォールバックします")
+                logger.warning(f"Anthropicモデル {self.model} へのアクセスが拒否されている可能性があるため、Amazon Novaモデルにフォールバックします")
                 self.model = default_model
             print(f"Bedrock mode: Using model {self.model}")
         else:
@@ -1043,8 +1043,8 @@ class VideoAnalyzer:
                 
                 # 通常のinvoke_modelを使用
                 # モデルに応じてリクエスト形式を調整
-                if "amazon.titan" in model:
-                    # Amazon Titanモデル用のリクエスト形式
+                if "amazon.titan-text" in model:
+                    # Amazon Titan Textモデル用のリクエスト形式（テキストのみ）
                     titan_body = json.dumps({
                         "inputText": prompt,
                         "textGenerationConfig": {
@@ -1056,6 +1056,32 @@ class VideoAnalyzer:
                     response = self.bedrock_runtime.invoke_model(
                         modelId=model, body=titan_body
                     )
+                elif "amazon.nova" in model:
+                    # Amazon Novaモデル用のリクエスト形式（マルチモーダル：画像と動画対応）
+                    nova_body = json.dumps({
+                        "contentType": "multipart/form-data",
+                        "parts": [
+                            {
+                                "contentType": "application/json",
+                                "data": json.dumps({
+                                    "modelParams": {
+                                        "maxTokens": 2048,
+                                        "temperature": 0.7,
+                                        "topP": 0.9
+                                    },
+                                    "prompt": prompt
+                                })
+                            }
+                        ] + [
+                            {
+                                "contentType": "image/jpeg",
+                                "data": frame
+                            } for frame in base64_frames
+                        ]
+                    })
+                    response = self.bedrock_runtime.invoke_model(
+                        modelId=model, body=nova_body
+                    )
                 else:
                     # Anthropicモデル用（標準）
                     response = self.bedrock_runtime.invoke_model(
@@ -1066,10 +1092,25 @@ class VideoAnalyzer:
                 response_body = json.loads(response.get('body').read())
                 
                 # モデルタイプに応じて異なる応答形式に対応
-                if "amazon.titan" in model:
-                    # Titanモデルの場合はoutputTextから直接取得
+                if "amazon.titan-text" in model:
+                    # Titan Textモデルの場合はoutputTextから直接取得
                     if 'outputText' in response_body:
                         text = response_body['outputText']
+                        result_text += text
+                        
+                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                        if stream_callback:
+                            # テキストを小さな部分に分割して疑似ストリーミング
+                            chunk_size = 20  # 20文字ずつ送信
+                            for i in range(0, len(text), chunk_size):
+                                text_chunk = text[i:i+chunk_size]
+                                stream_callback(text_chunk)
+                                import time
+                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                elif "amazon.nova" in model:
+                    # Nova (マルチモーダル) モデルの場合
+                    if 'output' in response_body and 'text' in response_body['output']:
+                        text = response_body['output']['text']
                         result_text += text
                         
                         # コールバックがあれば呼び出し (ストリーミングをシミュレート)
@@ -1185,8 +1226,8 @@ class VideoAnalyzer:
                 
                 # 通常のinvoke_modelを使用
                 # モデルに応じてリクエスト形式を調整
-                if "amazon.titan" in model:
-                    # Amazon Titanモデル用のリクエスト形式
+                if "amazon.titan-text" in model:
+                    # Amazon Titan Textモデル用のリクエスト形式（テキストのみ）
                     titan_body = json.dumps({
                         "inputText": prompt,
                         "textGenerationConfig": {
@@ -1198,6 +1239,32 @@ class VideoAnalyzer:
                     response = self.bedrock_runtime.invoke_model(
                         modelId=model, body=titan_body
                     )
+                elif "amazon.nova" in model:
+                    # Amazon Novaモデル用のリクエスト形式（マルチモーダル：画像と動画対応）
+                    nova_body = json.dumps({
+                        "contentType": "multipart/form-data",
+                        "parts": [
+                            {
+                                "contentType": "application/json",
+                                "data": json.dumps({
+                                    "modelParams": {
+                                        "maxTokens": 2048,
+                                        "temperature": 0.7,
+                                        "topP": 0.9
+                                    },
+                                    "prompt": prompt
+                                })
+                            }
+                        ] + [
+                            {
+                                "contentType": "image/jpeg",
+                                "data": frame
+                            } for frame in base64_frames
+                        ]
+                    })
+                    response = self.bedrock_runtime.invoke_model(
+                        modelId=model, body=nova_body
+                    )
                 else:
                     # Anthropicモデル用（標準）
                     response = self.bedrock_runtime.invoke_model(
@@ -1208,10 +1275,25 @@ class VideoAnalyzer:
                 response_body = json.loads(response.get('body').read())
                 
                 # モデルタイプに応じて異なる応答形式に対応
-                if "amazon.titan" in model:
-                    # Titanモデルの場合はoutputTextから直接取得
+                if "amazon.titan-text" in model:
+                    # Titan Textモデルの場合はoutputTextから直接取得
                     if 'outputText' in response_body:
                         text = response_body['outputText']
+                        result_text += text
+                        
+                        # コールバックがあれば呼び出し (ストリーミングをシミュレート)
+                        if stream_callback:
+                            # テキストを小さな部分に分割して疑似ストリーミング
+                            chunk_size = 20  # 20文字ずつ送信
+                            for i in range(0, len(text), chunk_size):
+                                text_chunk = text[i:i+chunk_size]
+                                stream_callback(text_chunk)
+                                import time
+                                time.sleep(0.05)  # 少し待機して疑似ストリーミング
+                elif "amazon.nova" in model:
+                    # Nova (マルチモーダル) モデルの場合
+                    if 'output' in response_body and 'text' in response_body['output']:
+                        text = response_body['output']['text']
                         result_text += text
                         
                         # コールバックがあれば呼び出し (ストリーミングをシミュレート)
