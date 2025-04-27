@@ -533,4 +533,11 @@ footer {
     border: 1px solid var(--border-color);
     border-radius: 3px;
     text-align: center;
+    margin-right: 0.5rem;
+}
+
+.duration-hint {
+    font-size: 0.8rem;
+    color: var(--light-text);
+    font-style: italic;
 }
