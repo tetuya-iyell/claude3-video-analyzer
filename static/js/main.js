@@ -464,6 +464,10 @@ document.addEventListener('DOMContentLoaded', () => {
         scriptTextarea.value = '台本を生成中...';
         scriptTextarea.disabled = true;
         
+        // 動画時間を取得（分単位）
+        const durationInput = document.getElementById('duration-input');
+        const durationMinutes = parseInt(durationInput.value) || 3;
+        
         fetch('/api/bedrock-scripts/generate-script', {
             method: 'POST',
             headers: {
@@ -471,7 +475,8 @@ document.addEventListener('DOMContentLoaded', () => {
             },
             body: JSON.stringify({
                 chapter_index: index,
-                chapters: chapters
+                chapters: chapters,
+                duration_minutes: durationMinutes // 動画時間パラメータを追加
             })
         })
         .then(response => response.json())

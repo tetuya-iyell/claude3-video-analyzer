@@ -486,8 +486,11 @@ def bedrock_generate_script():
     chapter = chapters[chapter_index]
     
     try:
-        # 台本生成
-        script_data = script_generator.generate_script_for_chapter(chapter)
+        # 動画時間パラメータを取得（設定されていなければデフォルト3分）
+        duration_minutes = int(data.get('duration_minutes', 3))
+        
+        # 台本生成（動画時間パラメータを渡す）
+        script_data = script_generator.generate_script_for_chapter(chapter, duration_minutes)
         
         # スクリプト情報のファイル
         scripts_file = os.path.join(SESSION_DATA_DIR, f"{session_id}_scripts.json")

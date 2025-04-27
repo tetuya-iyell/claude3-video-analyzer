@@ -505,3 +505,32 @@ footer {
     color: var(--light-text);
     font-size: 0.9rem;
 }
+
+/* 台本生成コントロール追加スタイル */
+.script-controls-top {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 1rem;
+}
+
+.duration-control {
+    display: flex;
+    align-items: center;
+    background-color: var(--secondary-color);
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+}
+
+.duration-control label {
+    margin-right: 0.5rem;
+    font-weight: bold;
+    color: var(--text-color);
+}
+
+.duration-control input {
+    width: 4rem;
+    padding: 0.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    text-align: center;
+}
