@@ -635,8 +635,21 @@ def bedrock_submit_feedback():
             improved_script_data = script_generator.improve_script(script_data, feedback_text)
             
             # 明示的に improved_script キーを設定
-            script_data['improved_script'] = improved_script_data['script_content']
-            logging.info(f"台本の改善が完了しました。improved_script キーを設定しました。長さ={len(script_data['improved_script'])}")
+            # 改善されたスクリプトが辞書型か文字列型かを確認
+            if isinstance(improved_script_data, dict) and 'script_content' in improved_script_data:
+                # 辞書型の場合は script_content キーを使用
+                script_data['improved_script'] = improved_script_data['script_content']
+                logging.info(f"台本の改善が完了しました（辞書型）。improved_script キーを設定しました。長さ={len(script_data['improved_script'])}")
+            elif isinstance(improved_script_data, str):
+                # 文字列型の場合はそのまま使用
+                script_data['improved_script'] = improved_script_data
+                logging.info(f"台本の改善が完了しました（文字列型）。improved_script キーを設定しました。長さ={len(script_data['improved_script'])}")
+            else:
+                # それ以外の型の場合はエラーログを出力
+                logging.error(f"台本の改善に失敗: 予期しないデータ型 {type(improved_script_data)}")
+                # エラー対策としてスクリプトの内容をそのままコピー
+                script_data['improved_script'] = script_data['script_content']
+                script_data['improved_script'] += "\n\n（フィードバックによる改善に失敗しました。手動で編集してください）"
         
         # 変更を保存
         scripts[chapter_index] = script_data

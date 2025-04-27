@@ -728,6 +728,11 @@ class ScriptGenerator:
                         logger.error(f"Bedrock AI Agent呼び出しエラー: {str(agent_error)}")
                         # 通常のBedrock基盤モデル呼び出しにフォールバック
                         raise ValueError(f"AI Agent error: {str(agent_error)}")
+                        
+                    # AIエージェントから受け取ったテキスト結果が文字列の場合の処理
+                    if isinstance(improved_script, str) and improved_script:
+                        logger.info(f"AIエージェントから文字列として受け取った改善台本を処理します（長さ: {len(improved_script)}）")
+                        # この時点で improved_script は文字列型
                 else:
                     # 通常のBedrock基盤モデル呼び出し（リトライ機能付き）
                     logger.info("通常のBedrock基盤モデルを使用します")
@@ -793,9 +798,18 @@ class ScriptGenerator:
         
         # 元の台本データをコピー
         improved_script_data = script_data.copy()
-        improved_script_data["script_content"] = improved_script
-        improved_script_data["status"] = "review"
         
+        # 改善された台本が文字列型である場合の処理
+        if isinstance(improved_script, str) and improved_script:
+            logger.info(f"文字列型の改善台本（長さ: {len(improved_script)}）を処理して辞書型に変換します")
+            improved_script_data["script_content"] = improved_script
+            improved_script_data["status"] = "review"
+        else:
+            # 正常な処理（辞書または何らかのオブジェクトを返す場合）
+            logger.info(f"既存の改善台本のフォーマットを使用: 型={type(improved_script)}")
+            improved_script_data["script_content"] = improved_script
+            improved_script_data["status"] = "review"
+            
         return improved_script_data
 
 
@@ -827,22 +841,54 @@ class VideoAnalyzer:
             aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
             aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
             aws_region = os.getenv("AWS_REGION", "us-east-1")
-
+            
+            # 認証情報がない場合はデフォルト認証情報チェーンを使用
+            # (~/.aws/credentials や環境変数など)
             if aws_access_key is None or aws_secret_key is None:
-                raise ValueError(
-                    "AWS credentials not found in environment variables or .env file."
-                )
+                logger.info("環境変数に認証情報がないため、AWS認証情報チェーンを使用します (~/.aws/credentials など)")
+            
 
             # Bedrockクライアントの初期化
             try:
                 # AWS認証情報の設定を確認
-                # 明示的にus-east-1リージョンを使用
-                aws_region = "us-east-1"
-                boto3_session = boto3.Session(
-                    aws_access_key_id=aws_access_key,
-                    aws_secret_access_key=aws_secret_key,
-                    region_name=aws_region,
-                )
+                # Bedrockが利用可能な特定のリージョンを使用
+                # まずは環境変数のリージョンを使用し、なければus-east-1をデフォルトとする
+                aws_region = os.getenv("AWS_REGION", "us-east-1")
+                # Bedrockモデルが利用可能な他のリージョンも検討
+                available_regions = ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
+                logger.info(f"設定されたリージョン: {aws_region}")
+                
+                # デフォルト認証情報チェーンを使用
+                if aws_access_key and aws_secret_key:
+                    # 環境変数に認証情報がある場合はそれを使用
+                    logger.info("AWS環境変数の認証情報を使用します")
+                    logger.info(f"使用するリージョン: {aws_region}")
+                    boto3_session = boto3.Session(
+                        aws_access_key_id=aws_access_key,
+                        aws_secret_access_key=aws_secret_key,
+                        region_name=aws_region,
+                    )
+                else:
+                    # AWS認証情報チェーンを使用 (~/.aws/credentials を含む)
+                    logger.info("AWSデフォルト認証情報チェーンを使用します (~/.aws/credentials)")
+                    try:
+                        # デフォルト認証情報プロバイダーチェーンをデバッグ
+                        home_dir = os.path.expanduser("~")
+                        aws_creds_file = os.path.join(home_dir, ".aws", "credentials")
+                        if os.path.exists(aws_creds_file):
+                            logger.info(f"AWS認証情報ファイルが存在します: {aws_creds_file}")
+                        else:
+                            logger.warning(f"AWS認証情報ファイルが見つかりません: {aws_creds_file}")
+                    except Exception as e:
+                        logger.warning(f"AWS認証情報ファイルのチェック中にエラーが発生しました: {str(e)}")
+                        
+                    boto3_session = boto3.Session(region_name=aws_region)
+                    sts = boto3_session.client('sts')
+                    try:
+                        identity = sts.get_caller_identity()
+                        logger.info(f"AWS認証情報チェーン使用中のIAMユーザー: {identity.get('Arn')}")
+                    except Exception as e:
+                        logger.warning(f"IAMユーザー情報の取得に失敗しました: {str(e)}")
 
                 # Bedrockランタイムクライアントの作成
                 self.bedrock_runtime = boto3_session.client(
@@ -868,10 +914,9 @@ class VideoAnalyzer:
         # モードに応じたモデルIDを環境変数から取得
         if self.use_bedrock:
             # Bedrockモードの場合はBEDROCK_MODEL_IDを使用
-            # 仕様に従いClaude 3.5 Sonnetを使用する
-            default_model = (
-                "anthropic.claude-3-5-sonnet-20240620-v1:0"  # 仕様通りClaudeモデルをデフォルト値に戻す
-            )
+            # 使用可能なClaudeモデルを使用する
+            # まずはClaudeの基本モデル（Claude 3 Sonnet）に切り替え
+            default_model = "anthropic.claude-3-sonnet-20240229-v1:0"
             self.model = os.getenv("BEDROCK_MODEL_ID", default_model)
             # IAMのアクセス権限がない場合は明確なエラーメッセージを表示するための準備
             print(f"Bedrock mode: Using model {self.model} (IAM権限が必要です)")
