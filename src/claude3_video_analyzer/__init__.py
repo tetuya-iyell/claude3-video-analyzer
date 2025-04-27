@@ -5,13 +5,157 @@ import os
 import boto3
 import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from dotenv import load_dotenv
 from .aws_retry import aws_api_retry
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# EventStream問題を解決するユーティリティ関数
+def safe_stringify(obj: Any) -> str:
+    """オブジェクトを安全に文字列化する関数。
+    EventStreamやその他のPythonオブジェクト参照を含む場合は、それらを除去する。
+    
+    Args:
+        obj: 文字列化する対象のオブジェクト
+        
+    Returns:
+        安全な文字列表現
+    """
+    # すでに文字列ならそのまま返す
+    if isinstance(obj, str):
+        return obj
+    
+    # EventStreamなどの特殊オブジェクトの場合は空文字列を返す
+    import botocore
+    if hasattr(botocore, 'eventstream') and isinstance(obj, botocore.eventstream.EventStream):
+        logger.warning("EventStreamオブジェクトを安全に変換: '[EventStream content]'")
+        return "[EventStream content]"
+    
+    # その他のPythonオブジェクト参照を持つ可能性のある場合
+    try:
+        # 文字列化してPythonオブジェクト参照を検出
+        obj_str = str(obj)
+        if ('<' in obj_str and '>' in obj_str and 
+            any(marker in obj_str for marker in ['object at 0x', 'EventStream', 'botocore'])):
+            logger.warning(f"オブジェクト参照を検出: {obj_str[:30]}... - 安全な値に置換")
+            return "[Object reference removed]"
+        return obj_str
+    except Exception:
+        # 例外が発生した場合も安全な値を返す
+        return "[Unstringifiable object]"
+
+
+def sanitize_script(script_text: str) -> str:
+    """台本テキストを徹底的にサニタイズし、EventStreamオブジェクト参照などを完全に除去する
+
+    Args:
+        script_text: サニタイズ対象の台本テキスト
+        
+    Returns:
+        サニタイズされた台本テキスト
+    """
+    import re
+    
+    # テキストがない場合は空文字を返す
+    if not script_text:
+        return ""
+        
+    # 1. AIが追加した説明/前書きを削除（ユーザーの要望による）
+    # 通常、台本は「ナレーション:」「れいむ:」「まりさ:」などで始まるので、その前の説明文を削除
+    first_character_idx = -1
+    for character in ["ナレーション:", "れいむ:", "まりさ:"]:
+        pos = script_text.find(character)
+        if pos >= 0 and (first_character_idx == -1 or pos < first_character_idx):
+            first_character_idx = pos
+    
+    # 説明文が検出された場合は削除
+    if first_character_idx > 0:
+        original_length = len(script_text)
+        script_text = script_text[first_character_idx:]
+        logger.info(f"台本の前書き/説明文を削除しました（{original_length - len(script_text)}文字）")
+    
+    # 2. 行単位での厳格なフィルタリング
+    lines = script_text.split('\n')
+    clean_lines = []
+    removed_lines = 0
+    
+    for line in lines:
+        # EventStreamやオブジェクト参照を含む行は完全に除外（あらゆるパターンを検出）
+        if any(marker in line for marker in 
+              ['EventStream', 'botocore', 'object at 0x', 'at 0x']):
+            removed_lines += 1
+            logger.warning(f"サニタイズ: 問題のある行を完全に削除「{line[:30]}...」")
+            continue
+            
+        # キャラクター発言行での特別チェック（最も重要）
+        if any(char_prefix in line for char_prefix in ["れいむ:", "まりさ:", "ナレーション:"]):
+            # 不審なパターンを持つキャラクター行を除外
+            if '<' in line and '>' in line:
+                removed_lines += 1
+                logger.warning(f"サニタイズ: 問題のあるキャラクター行を削除「{line[:30]}...」")
+                continue
+        
+        # 安全な行のみを追加
+        clean_lines.append(line)
+    
+    # 3. 正規表現によるさらなるサニタイズ
+    sanitized_text = '\n'.join(clean_lines)
+    
+    # あらゆる形式のオブジェクト参照パターンを対象に
+    patterns = [
+        # 一般的なオブジェクト参照
+        r'<[^>]*?(EventStream|botocore|object at|at 0x)[^>]*?>',
+        
+        # キャラクター発言行内のオブジェクト参照（特に重要）
+        r'(れいむ|まりさ|ナレーション):.*?<.*?(EventStream|object|botocore).*?>.*',
+        
+        # 完全なEventStream行
+        r'.*EventStream.*',
+        r'.*botocore.*',
+        r'.*object at 0x.*'
+    ]
+    
+    # パターン適用
+    for pattern in patterns:
+        old_len = len(sanitized_text)
+        sanitized_text = re.sub(pattern, '', sanitized_text)
+        if len(sanitized_text) != old_len:
+            logger.info(f"サニタイズ: '{pattern}'パターンで{old_len - len(sanitized_text)}文字を削除")
+    
+    # 4. 台本の整形 - 話者の間に改行を挿入して可読性を向上
+    lines = sanitized_text.split('\n')
+    
+    # 空行を削除して基本クリーニング
+    clean_lines = [line for line in lines if line.strip()]  
+    
+    # 話者間に改行を入れる処理
+    formatted_lines = []
+    prev_speaker = None
+    
+    for line in clean_lines:
+        # 話者の判定（行頭が「れいむ:」「まりさ:」「ナレーション:」で始まるか）
+        current_speaker = None
+        for speaker in ["れいむ:", "まりさ:", "ナレーション:"]:
+            if line.startswith(speaker):
+                current_speaker = speaker
+                break
+        
+        # 前の行と今の行の話者が異なる場合、改行を挿入
+        if current_speaker and prev_speaker and current_speaker != prev_speaker:
+            formatted_lines.append("")  # 空行を挿入
+        
+        formatted_lines.append(line)
+        prev_speaker = current_speaker
+    
+    if removed_lines > 0 or len(lines) != len(clean_lines):
+        logger.info(f"サニタイズ完了: 合計{removed_lines}行を削除、{len(lines) - len(clean_lines)}件の空行を削除")
+    
+    logger.info(f"台本フォーマット調整: 話者間に改行を挿入して可読性を向上({len(formatted_lines)}行)")
+    
+    return '\n'.join(formatted_lines)
 
 # 環境変数の読み込み
 load_dotenv()
@@ -803,21 +947,22 @@ class ScriptGenerator:
                                         logger.info("レスポンスから直接completionを取得")
                                     
                                     for event in events_list:
-                                        # イベントの型をログ出力
-                                        logger.info(f"イベント詳細検証: 型={type(event)}, 文字列表現={str(event)[:50]}")
+                                        # イベントの型をログ出力（安全な文字列化で）
+                                        logger.info(f"イベント詳細検証: 型={type(event)}, 文字列表現={safe_stringify(event)[:50]}")
                                         
                                         # 辞書として直接アクセス
                                         if isinstance(event, dict):
                                             if 'completion' in event:
                                                 extracted_completion = event['completion']
                                                 completion_found = True
-                                                logger.info(f"dictイベントからcompletionを取得: {str(extracted_completion)[:30]}...")
+                                                # EventStream参照問題の根本対策: 安全なstringify関数を使用
+                                                logger.info(f"dictイベントからcompletionを取得: {safe_stringify(extracted_completion)[:30]}...")
                                                 break
                                                 
                                             # chunkデータを探す
                                             elif 'chunk' in event:
                                                 try:
-                                                    logger.info(f"チャンク情報を検出: {str(event['chunk'])[:50]}")
+                                                    logger.info(f"チャンク情報を検出: {safe_stringify(event['chunk'])[:50]}")
                                                     
                                                     # バイナリデータの可能性
                                                     if hasattr(event['chunk'], 'bytes'):
@@ -834,7 +979,8 @@ class ScriptGenerator:
                                         if hasattr(event, 'completion'):
                                             extracted_completion = event.completion
                                             completion_found = True
-                                            logger.info(f"イベント属性からcompletionを取得: {str(extracted_completion)[:30]}...")
+                                            # EventStream参照問題根本対策: 安全な文字列化
+                                            logger.info(f"イベント属性からcompletionを取得: {safe_stringify(extracted_completion)[:30]}...")
                                             break
                                         
                                         # __dict__を使って確認
@@ -844,7 +990,8 @@ class ScriptGenerator:
                                             if 'completion' in event_dict:
                                                 extracted_completion = event_dict['completion']
                                                 completion_found = True
-                                                logger.info(f"イベント__dict__からcompletionを取得: {str(extracted_completion)[:30]}...")
+                                                # EventStream参照問題根本対策: 安全な文字列化
+                                                logger.info(f"イベント__dict__からcompletionを取得: {safe_stringify(extracted_completion)[:30]}...")
                                                 break
                                     
                                     # 最初にcompletionを使用
@@ -874,11 +1021,24 @@ class ScriptGenerator:
                         improved_script = ""
                         try:
                             if isinstance(response, dict) and 'completion' in response:
-                                # completion値の処理
+                                # ★★★ 根本対策: EventStreamを含む場合、安全な方法で処理 ★★★
                                 completion_value = response['completion']
-                                # レスポンスの文字列表現を安全のために取得
-                                response_repr = str(response)[:500] # 長すぎないようにする
-                                logger.info(f"レスポンス文字列表現: {response_repr}")
+                                
+                                # 安全な文字列化でレスポンスを記録（直接str()呼び出しを避ける）
+                                # EventStreamオブジェクトの直接stringifyによる混入を防止
+                                try:
+                                    safe_response = {}
+                                    for k, v in response.items():
+                                        if k == 'completion' and not isinstance(v, str):
+                                            safe_response[k] = safe_stringify(v)
+                                        else:
+                                            safe_response[k] = v
+                                    response_repr = str(safe_response)[:100]  # さらに短く制限
+                                    logger.info(f"レスポンス文字列表現(安全版): {response_repr}")
+                                except Exception as format_err:
+                                    logger.warning(f"レスポンス安全文字列化エラー: {format_err}")
+                                    # 最低限の情報だけ記録
+                                    logger.info("レスポンス文字列表現: [安全に表示できない内容]")
                                 
                                 # EventStreamの最適化処理
                                 import botocore
@@ -1010,15 +1170,51 @@ class ScriptGenerator:
                                                     # 方法3: chunkプロパティ（バイナリデータ） - 最重要な方法
                                                     elif hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
                                                         try:
-                                                            chunk_text = event.chunk.bytes.decode('utf-8', errors='replace')
-                                                            if len(chunk_text.strip()) > 0:
-                                                                event_texts.append(chunk_text)
-                                                                content_events.append(chunk_text)  # 重要: 実際のコンテンツイベントとして保存
-                                                                valid_content_events += 1
-                                                                total_content_length += len(chunk_text)
-                                                                logger.info(f"バイナリchunkから抽出: {chunk_text[:30] if len(chunk_text) > 30 else chunk_text}...")
-                                                                text_extracted = True
-                                                                found_content = True # 実際のコンテンツを見つけたフラグを設定
+                                                            chunk_bytes = event.chunk.bytes
+                                                            chunk_text = chunk_bytes.decode('utf-8', errors='replace')
+                                                            
+                                                            # ★★★ 根本的な原因修正: EventStreamの直接参照を事前チェック ★★★
+                                                            # 文字列をバッファに格納する前に徹底的な浄化を実施
+                                                            if chunk_text.strip():
+                                                                # EventStreamオブジェクトや他のPythonオブジェクト参照をチェック
+                                                                contains_object_ref = any(marker in chunk_text for marker in 
+                                                                    ['<botocore', 'EventStream', '<boto', 'object at 0x', 'at 0x'])
+                                                                
+                                                                if contains_object_ref:
+                                                                    # 参照が含まれる場合はPython処理前にサニタイズ
+                                                                    logger.warning("EventStreamチャンクにPythonオブジェクト参照を検出。事前サニタイズを実施")
+                                                                    
+                                                                    # 行単位で処理（最も確実な方法）
+                                                                    cleaned_lines = []
+                                                                    for line in chunk_text.split('\n'):
+                                                                        # 問題がある行は完全に除去
+                                                                        if any(marker in line for marker in 
+                                                                              ['<botocore', 'EventStream', '<boto', 'object at 0x', 'at 0x']):
+                                                                            logger.warning(f"事前チェック: 問題行を除去「{line[:30]}...」")
+                                                                            continue
+                                                                            
+                                                                        # キャラクター発言行の特別チェック
+                                                                        if any(char in line for char in ['れいむ:', 'まりさ:', 'ナレーション:']):
+                                                                            if any(ref in line for ref in ['<', '>', 'object', 'EventStream']):
+                                                                                logger.warning(f"事前チェック: 問題のあるキャラクター行を除去「{line[:30]}...」")
+                                                                                continue
+                                                                        
+                                                                        # 安全な行のみを保持
+                                                                        cleaned_lines.append(line)
+                                                                    
+                                                                    # 浄化済みのテキストを使用
+                                                                    chunk_text = '\n'.join(cleaned_lines)
+                                                                    logger.info(f"事前サニタイズ完了: イベントチャンクを安全に処理")
+                                                                
+                                                                # 安全になったテキストのみをバッファに追加
+                                                                if chunk_text.strip():
+                                                                    event_texts.append(chunk_text)
+                                                                    content_events.append(chunk_text)  # 実際のコンテンツとして保存
+                                                                    valid_content_events += 1
+                                                                    total_content_length += len(chunk_text)
+                                                                    logger.info(f"バイナリchunkから抽出: {chunk_text[:30] if len(chunk_text) > 30 else chunk_text}...")
+                                                                    text_extracted = True
+                                                                    found_content = True  # コンテンツフラグを設定
                                                         except Exception as decode_err:
                                                             logger.warning(f"バイナリデータのデコードに失敗: {decode_err}")
                                                     
@@ -1177,6 +1373,93 @@ class ScriptGenerator:
                                                         raise ValueError("EventStreamからコンテンツを抽出できませんでした")
                                             
                                             logger.info(f"EventStreamから改善台本を取得: {len(improved_script)}文字, サンプル: {improved_script[:100]}...")
+                                            
+                                            # EventStreamオブジェクト文字列を検出して除去（強化版）
+                                            if '<botocore' in improved_script or 'EventStream' in improved_script or 'object at 0x' in improved_script or ('<' in improved_script and '>' in improved_script and '0x' in improved_script):
+                                                logger.warning("スクリプト中にPythonオブジェクト参照が検出されました。徹底的なクリーニングを実行します")
+                                                import re
+                                                
+                                                # 1. 行単位での厳格なフィルタリング
+                                                lines = improved_script.split('\n')
+                                                clean_lines = []
+                                                removed_lines = 0
+                                                
+                                                for line in lines:
+                                                    # 1-1. 明確に問題のある行を完全に除外
+                                                    if ('EventStream' in line or 
+                                                        'botocore' in line or 
+                                                        'object at 0x' in line or
+                                                        ('<' in line and '>' in line and '0x' in line)):
+                                                        removed_lines += 1
+                                                        logger.warning(f"問題のある行を削除: {line[:50]}...")
+                                                        continue
+                                                        
+                                                    # 1-2. キャラクター発言行の特別処理
+                                                    if any(char_prefix in line for char_prefix in ['れいむ:', 'まりさ:', 'ナレーション:']):
+                                                        # キャラクター発言内に問題があればその行を除外
+                                                        if any(obj_ref in line for obj_ref in ['<', '>', 'object', 'EventStream', 'botocore']):
+                                                            removed_lines += 1
+                                                            logger.warning(f"問題のあるキャラクター発言行を削除: {line[:50]}...")
+                                                            continue
+                                                    
+                                                    # クリーンな行だけを保持
+                                                    clean_lines.append(line)
+                                                
+                                                # 2. 正規表現による徹底的なクリーニング
+                                                cleaned_script = '\n'.join(clean_lines)
+                                                patterns = [
+                                                    # Pythonオブジェクト参照の一般的なパターン
+                                                    r'<[^>]*?at 0x[0-9a-f]+[^>]*?>',
+                                                    r'<[^>]*?object[^>]*?>',
+                                                    r'<[^>]*?botocore[^>]*?>',
+                                                    r'<[^>]*?EventStream[^>]*?>',
+                                                    
+                                                    # キャラクター発言内の参照（行全体のパターン）
+                                                    r'れいむ:.*?<.*?object.*?>.*(\n|$)',
+                                                    r'まりさ:.*?<.*?object.*?>.*(\n|$)',
+                                                    r'ナレーション:.*?<.*?object.*?>.*(\n|$)',
+                                                    r'れいむ:.*?<.*?EventStream.*?>.*(\n|$)',
+                                                    r'まりさ:.*?<.*?EventStream.*?>.*(\n|$)',
+                                                    r'ナレーション:.*?<.*?EventStream.*?>.*(\n|$)',
+                                                    r'れいむ:.*?<.*?at 0x[0-9a-f]+.*?>.*(\n|$)',
+                                                    r'まりさ:.*?<.*?at 0x[0-9a-f]+.*?>.*(\n|$)',
+                                                    r'ナレーション:.*?<.*?at 0x[0-9a-f]+.*?>.*(\n|$)',
+                                                    
+                                                    # 残存している可能性のある参照
+                                                    r'<.*?EventStream.*?>',
+                                                    r'<.*?object at 0x[0-9a-f]+.*?>',
+                                                    r'<.*?at 0x[0-9a-f]+.*?>'
+                                                ]
+                                                
+                                                # パターン適用して徹底的に浄化
+                                                for pattern in patterns:
+                                                    prev_len = len(cleaned_script)
+                                                    cleaned_script = re.sub(pattern, '', cleaned_script)
+                                                    if len(cleaned_script) != prev_len:
+                                                        logger.info(f"パターン '{pattern}' で {prev_len - len(cleaned_script)} 文字を削除")
+                                                
+                                                # 3. 追加の検証と最終クリーニング
+                                                if 'EventStream' in cleaned_script or 'botocore' in cleaned_script or 'object at 0x' in cleaned_script:
+                                                    logger.warning("最初のクリーニング後も問題が残っています。最終フィルタリングを適用")
+                                                    
+                                                    # 確実に問題を解決するための再フィルタリング
+                                                    lines = cleaned_script.split('\n')
+                                                    final_lines = []
+                                                    extra_removed = 0
+                                                    
+                                                    for line in lines:
+                                                        # 問題のあるキーワードを含む行は完全に除外
+                                                        if not any(kw in line for kw in ['EventStream', 'botocore', 'object at 0x', '<', '>']):
+                                                            final_lines.append(line)
+                                                        else:
+                                                            extra_removed += 1
+                                                    
+                                                    cleaned_script = '\n'.join(final_lines)
+                                                    logger.warning(f"最終フィルタリングで追加 {extra_removed} 行を除去")
+                                                
+                                                # 結果を返す
+                                                improved_script = cleaned_script
+                                                logger.info(f"Pythonオブジェクト参照の徹底クリーニング完了: 合計 {removed_lines} 行を除去、最終テキスト長 {len(improved_script)} 文字")
                                         else:
                                             logger.warning("EventStreamから有効なテキストを取得できませんでした")
                                             raise ValueError("EventStream processing failed to extract text")
@@ -1352,14 +1635,92 @@ class ScriptGenerator:
                         # スクリプトを精査して余分な情報を除去
                         cleaned_script = improved_script
                         
-                        # EventStreamオブジェクト文字列を検出して除去
-                        if '<botocore.eventstream.EventStream' in improved_script:
-                            logger.warning("EventStreamオブジェクトの文字列表現が台本に混入しています。除去します。")
+                        # EventStreamオブジェクト文字列を検出して除去（根本的な解決策）
+                        if '<botocore' in improved_script or 'EventStream' in improved_script or 'object at 0x' in improved_script or (('<' in improved_script and '>' in improved_script)):
+                            logger.warning("最終出力段階でPythonオブジェクト参照が検出されました。徹底的なサニタイズを実行します")
                             import re
-                            # EventStreamオブジェクト文字列のパターンを検出して削除
-                            pattern = r'<botocore\.eventstream\.EventStream[^>]+>'
-                            cleaned_script = re.sub(pattern, '', cleaned_script)
-                            logger.info(f"EventStream文字列を削除しました。新しい長さ: {len(cleaned_script)}文字")
+                            
+                            # 1. 行単位での厳格なフィルタリング（最も効果的なアプローチ）
+                            lines = improved_script.split('\n')
+                            clean_lines = []
+                            removed_lines = 0
+                            
+                            for line in lines:
+                                # 1-1. 明確に問題のある行を完全に除外（厳格な基準）
+                                if ('EventStream' in line or 
+                                    'botocore' in line or 
+                                    'object at 0x' in line or
+                                    'at 0x' in line or
+                                    ('<' in line and '>' in line and ('0x' in line or 'object' in line or 'EventStream' in line))):
+                                    removed_lines += 1
+                                    logger.warning(f"問題のある行を完全に削除: {line[:50]}...")
+                                    continue
+                                    
+                                # 1-2. キャラクター発言行の特別処理（最も重要）
+                                if any(character in line for character in ['れいむ:', 'まりさ:', 'ナレーション:']):
+                                    # 疑わしいキャラクタが含まれる発言行は削除
+                                    if any(obj_marker in line for obj_marker in ['<', '>', 'object', 'EventStream', 'botocore', 'at 0x']):
+                                        removed_lines += 1
+                                        logger.warning(f"問題のあるキャラクター発言行を削除: {line[:50]}...")
+                                        continue
+                                
+                                # 安全な行のみを保持
+                                clean_lines.append(line)
+                            
+                            cleaned_script = '\n'.join(clean_lines)
+                            
+                            # 2. 正規表現による二次フィルタリング（念のため）
+                            patterns = [
+                                # Pythonオブジェクト参照の一般的なパターン
+                                r'<[^>]*?at 0x[0-9a-f]+[^>]*?>',
+                                r'<[^>]*?object[^>]*?>',
+                                r'<[^>]*?botocore[^>]*?>',
+                                r'<[^>]*?EventStream[^>]*?>',
+                                r'<[^>]*?0x[0-9a-f]+[^>]*?>',
+                                
+                                # キャラクター発言内の参照（特に重要）
+                                r'れいむ:.*?<.*?object.*?>.*(\n|$)',
+                                r'まりさ:.*?<.*?object.*?>.*(\n|$)',
+                                r'ナレーション:.*?<.*?object.*?>.*(\n|$)',
+                                r'れいむ:.*?<.*?EventStream.*?>.*(\n|$)',
+                                r'まりさ:.*?<.*?EventStream.*?>.*(\n|$)',
+                                r'ナレーション:.*?<.*?EventStream.*?>.*(\n|$)',
+                                r'れいむ:.*?<.*?at 0x[0-9a-f]+.*?>.*(\n|$)',
+                                r'まりさ:.*?<.*?at 0x[0-9a-f]+.*?>.*(\n|$)',
+                                r'ナレーション:.*?<.*?at 0x[0-9a-f]+.*?>.*(\n|$)',
+                                
+                                # その他の問題となるパターン
+                                r'<.*?EventStream.*?>',
+                                r'<.*?object at 0x[0-9a-f]+.*?>',
+                                r'<.*?at 0x[0-9a-f]+.*?>'
+                            ]
+                            
+                            # パターン適用して追加クリーニング
+                            for pattern in patterns:
+                                prev_len = len(cleaned_script)
+                                cleaned_script = re.sub(pattern, '', cleaned_script)
+                                if len(cleaned_script) != prev_len:
+                                    logger.info(f"パターン '{pattern}' で追加 {prev_len - len(cleaned_script)} 文字を削除")
+                            
+                            # 3. 最終確認 - 残っている問題がないか三次チェック
+                            if any(marker in cleaned_script for marker in ['EventStream', 'botocore', 'object at 0x', 'at 0x']):
+                                logger.warning("サニタイズ後もオブジェクト参照が残っています。最終クリーニングを実行")
+                                
+                                # 最後の手段として厳格なルールで行フィルタリング
+                                lines = cleaned_script.split('\n')
+                                final_lines = []
+                                
+                                for line in lines:
+                                    # 問題の可能性のあるキーワードが含まれる行を完全に除去
+                                    if not any(kw in line for kw in ['EventStream', 'botocore', 'object at', 'at 0x', '<', '>']):
+                                        final_lines.append(line)
+                                
+                                cleaned_script = '\n'.join(final_lines)
+                                logger.warning(f"最終クリーニング後の長さ: {len(cleaned_script)}文字")
+                            
+                            logger.info(f"徹底的なサニタイズ処理完了: {removed_lines}行を削除、最終長さ: {len(cleaned_script)}文字")
+                            # 処理済みスクリプトを設定
+                            improved_script = cleaned_script
                         
                         # JSONやトレース情報が含まれているかチェック
                         if '{' in improved_script and '}' in improved_script and ('trace' in improved_script or 'completion' in improved_script):
@@ -1569,10 +1930,46 @@ class ScriptGenerator:
                                                 # チャンクデータからテキストを抽出
                                                 if hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
                                                     try:
-                                                        chunk_text = event.chunk.bytes.decode('utf-8')
-                                                        content_events.append(chunk_text)
-                                                        if len(content_events) == 1 or len(content_events) % 5 == 0:
-                                                            logger.info(f"2回目: チャンクデータを追加（{len(chunk_text)}文字, 合計{sum(len(t) for t in content_events)}文字）")
+                                                        chunk_bytes = event.chunk.bytes
+                                                        chunk_text = chunk_bytes.decode('utf-8', errors='replace')
+                                                        
+                                                        # ★★★ 根本的な原因修正: EventStreamの直接参照を事前に除去 ★★★
+                                                        if chunk_text.strip():
+                                                            # オブジェクト参照が含まれるかチェック（よりアグレッシブに）
+                                                            contains_object_ref = any(marker in chunk_text for marker in 
+                                                                ['<botocore', 'EventStream', '<boto', 'object at 0x', 'at 0x', '<', '>'])
+                                                            
+                                                            if contains_object_ref:
+                                                                # オブジェクト参照がある場合、行単位でフィルタリング
+                                                                logger.warning("2回目: チャンクにPythonオブジェクト参照を検出。サニタイズ実施")
+                                                                
+                                                                # 行単位でフィルタリング（最も効果的）
+                                                                cleaned_lines = []
+                                                                for line in chunk_text.split('\n'):
+                                                                    # 問題のある行は除外
+                                                                    if any(marker in line for marker in 
+                                                                          ['<botocore', 'EventStream', '<boto', 'object at 0x', 'at 0x']):
+                                                                        logger.warning(f"2回目: 問題行を除去「{line[:30]}...」") 
+                                                                        continue
+                                                                    
+                                                                    # キャラクター発言行の特別チェック
+                                                                    if any(char in line for char in ['れいむ:', 'まりさ:', 'ナレーション:']):
+                                                                        if '<' in line and '>' in line:
+                                                                            logger.warning(f"2回目: 問題のあるキャラクター行を除去「{line[:30]}...」")
+                                                                            continue
+                                                                    
+                                                                    # 問題ない行だけを保持
+                                                                    cleaned_lines.append(line)
+                                                                
+                                                                # サニタイズされたテキストを使用
+                                                                chunk_text = '\n'.join(cleaned_lines)
+                                                                logger.info("2回目: チャンクデータの事前サニタイズ完了")
+                                                            
+                                                            # 安全になったテキストのみを格納
+                                                            if chunk_text.strip():
+                                                                content_events.append(chunk_text)
+                                                                if len(content_events) == 1 or len(content_events) % 5 == 0:
+                                                                    logger.info(f"2回目: チャンクデータを追加（{len(chunk_text)}文字, 合計{sum(len(t) for t in content_events)}文字）")
                                                     except Exception as e:
                                                         logger.warning(f"2回目: チャンクデコードエラー: {e}")
                                             
@@ -1690,8 +2087,119 @@ class ScriptGenerator:
                                                         logger.info(f"2回目: レスポンスクラス名: {class_name}")
                                                         if 'EventStream' in class_name:
                                                             logger.warning(f"EventStreamオブジェクトを検出しました。直接の文字列化は避けて内容を抽出します。")
-                                                            # EventStreamの内容を安全に抽出するコードに切り替え
-                                                            # 文字列表現せずに中身を抽出
+                                                            # EventStreamの内容を安全に抽出するコード
+                                                            extracted_text = None
+                                                            try:
+                                                                # EventStreamをイテレートして中身を抽出
+                                                                for event in second_response:
+                                                                    if hasattr(event, 'chunk') and hasattr(event.chunk, 'bytes'):
+                                                                        chunk_bytes = event.chunk.bytes
+                                                                        chunk_text = chunk_bytes.decode('utf-8', errors='replace')
+                                                                        if chunk_text.strip():  # 空でなければ
+                                                                            # 抽出したテキストから不要なEventStream参照などを完全に除去
+                                                                            # 根本的な問題解決のための徹底的なクリーニング処理
+                                                                            import re
+                                                                            
+                                                                            # 最初に文字列チェック - オブジェクト参照が含まれているか確認
+                                                                            has_python_obj = ('EventStream' in chunk_text or 
+                                                                                             'botocore' in chunk_text or 
+                                                                                             'object at 0x' in chunk_text or 
+                                                                                             ('<' in chunk_text and '>' in chunk_text and '0x' in chunk_text))
+                                                                            
+                                                                            if has_python_obj:
+                                                                                logger.warning("テキストにPythonオブジェクト参照が検出されました - 厳格なフィルタリングを適用します")
+                                                                                
+                                                                                # 1. まず行単位でフィルタリング - オブジェクト参照を含む行を完全に削除
+                                                                                lines = chunk_text.split('\n')
+                                                                                clean_lines = []
+                                                                                removed_lines = 0
+                                                                                
+                                                                                for line in lines:
+                                                                                    # EventStreamやオブジェクト参照を含む行は完全に除外
+                                                                                    if ('EventStream' in line or 
+                                                                                        'botocore' in line or 
+                                                                                        'object at 0x' in line or 
+                                                                                        ('<' in line and '>' in line and '0x' in line) or  # オブジェクト参照のパターン
+                                                                                        ('at 0x' in line)): # Pythonオブジェクトのアドレス参照パターン
+                                                                                        removed_lines += 1
+                                                                                        logger.warning(f"問題のある行を検出して除外: {line[:30]}...")
+                                                                                        continue
+                                                                                        
+                                                                                    # キャラクター発言内の問題をチェック
+                                                                                    if any(character in line for character in ['れいむ:', 'まりさ:', 'ナレーション:']):
+                                                                                        # オブジェクト参照のある発言行をチェック
+                                                                                        if ('<' in line and '>' in line) or 'object' in line or 'EventStream' in line:
+                                                                                            removed_lines += 1
+                                                                                            logger.warning(f"問題があるキャラクター発言行を除外: {line[:30]}...")
+                                                                                            continue
+                                                                                    
+                                                                                    # クリーンな行のみ追加
+                                                                                    clean_lines.append(line)
+                                                                                
+                                                                                # 2. 正規表現を使った二次フィルタリング
+                                                                                chunk_text = '\n'.join(clean_lines)
+                                                                                
+                                                                                # 徹底的なパターンマッチング
+                                                                                patterns = [
+                                                                                    # あらゆるPythonオブジェクト表現
+                                                                                    r'<[^>]*?at 0x[0-9a-f]+[^>]*?>',
+                                                                                    r'<[^>]*?object[^>]*?>',
+                                                                                    r'<[^>]*?botocore[^>]*?>',
+                                                                                    r'<[^>]*?EventStream[^>]*?>',
+                                                                                    
+                                                                                    # キャラクターセリフ中の参照
+                                                                                    r'れいむ:.*?<.*?object.*?>.*(\n|$)',
+                                                                                    r'まりさ:.*?<.*?object.*?>.*(\n|$)',
+                                                                                    r'ナレーション:.*?<.*?object.*?>.*(\n|$)',
+                                                                                    r'れいむ:.*?<.*?EventStream.*?>.*(\n|$)',
+                                                                                    r'まりさ:.*?<.*?EventStream.*?>.*(\n|$)',
+                                                                                    r'ナレーション:.*?<.*?EventStream.*?>.*(\n|$)',
+                                                                                    
+                                                                                    # 残りの行の修正
+                                                                                    r'<.*?EventStream.*?>',
+                                                                                    r'<.*?object at 0x[0-9a-f]+.*?>',
+                                                                                ]
+                                                                                
+                                                                                # パターンを適用
+                                                                                for pattern in patterns:
+                                                                                    prev_len = len(chunk_text)
+                                                                                    chunk_text = re.sub(pattern, '', chunk_text)
+                                                                                    if len(chunk_text) != prev_len:
+                                                                                        logger.info(f"パターン '{pattern}' でテキストを浄化しました")
+                                                                                
+                                                                                # 3. 最終チェック - 三次フィルタリング
+                                                                                if ('EventStream' in chunk_text or 'botocore' in chunk_text or 'object at 0x' in chunk_text):
+                                                                                    logger.warning("浄化後も問題が残っているため、最終フィルタリングを適用")
+                                                                                    # 行単位で再度厳格にフィルタリング
+                                                                                    lines = chunk_text.split('\n')
+                                                                                    clean_lines = []
+                                                                                    for line in lines:
+                                                                                        # 問題キーワードを含む行を完全に削除
+                                                                                        if not any(kw in line for kw in ['EventStream', 'botocore', 'object at 0x', '<', '>']):
+                                                                                            clean_lines.append(line)
+                                                                                    chunk_text = '\n'.join(clean_lines)
+                                                                                    
+                                                                                logger.info(f"厳格なフィルタリング完了: {removed_lines}行を除去、最終テキスト長={len(chunk_text)}文字")
+                                                                            else:
+                                                                                logger.info("テキストにオブジェクト参照がないため標準クリーニングのみ適用")
+                                                                            
+                                                                            # クリーンなテキストを設定（フィルター済みのchunk_textを使用）
+                                                                            if chunk_text.strip():  # 空でなければ
+                                                                                extracted_text = chunk_text
+                                                                                logger.info(f"EventStreamから直接テキスト抽出（クリーニング済み）: {len(extracted_text)}文字")
+                                                                                break
+                                                                
+                                                                if extracted_text:
+                                                                    # 抽出したテキストを使用
+                                                                    cleaned_script = extracted_text
+                                                                    logger.info(f"EventStreamから抽出したテキストで更新: {len(extracted_text)}文字")
+                                                                    # 文字列表現は設定しない
+                                                                    str_representation = None
+                                                                else:
+                                                                    str_representation = "EventStreamからテキスト抽出に失敗"
+                                                            except Exception as extr_err:
+                                                                logger.error(f"EventStream抽出エラー: {extr_err}")
+                                                                str_representation = "EventStream処理エラー"
                                                         else:
                                                             # 文字列表現を取得（先頭1000文字まで）
                                                             str_representation = str(second_response)[:1000]
@@ -1931,12 +2439,26 @@ class ScriptGenerator:
         # 改善された台本が文字列型である場合の処理
         if isinstance(improved_script, str) and improved_script:
             logger.info(f"文字列型の改善台本（長さ: {len(improved_script)}）を処理して辞書型に変換します")
-            improved_script_data["script_content"] = improved_script
+            
+            # ★★★ 根本対策: 全ての台本内容を最終サニタイズ処理 ★★★
+            # EventStreamオブジェクト参照を完全に除去し、余計な前書きも削除
+            sanitized_script = sanitize_script(improved_script)
+            logger.info(f"最終サニタイズ処理を適用しました。処理前={len(improved_script)}文字、処理後={len(sanitized_script)}文字")
+            
+            improved_script_data["script_content"] = sanitized_script
             improved_script_data["status"] = "review"
         else:
             # 正常な処理（辞書または何らかのオブジェクトを返す場合）
             logger.info(f"既存の改善台本のフォーマットを使用: 型={type(improved_script)}")
-            improved_script_data["script_content"] = improved_script
+            
+            # 安全のために文字列化とサニタイズを適用
+            if improved_script is not None:
+                script_str = str(improved_script) if not isinstance(improved_script, str) else improved_script
+                sanitized_script = sanitize_script(script_str)
+                improved_script_data["script_content"] = sanitized_script
+            else:
+                improved_script_data["script_content"] = ""
+                
             improved_script_data["status"] = "review"
             
         return improved_script_data

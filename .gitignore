@@ -33,6 +33,9 @@ venv/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Flask session data
+flask_sessions/
+
 pyproject.toml
 requirements-dev.lock
 requirements.lock

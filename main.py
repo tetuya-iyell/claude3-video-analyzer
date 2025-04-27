@@ -541,6 +541,8 @@ def bedrock_analyze_script():
         
     chapter_index = data['chapter_index']
     script_content = data.get('script_content')
+    # 動画時間パラメータを取得（設定されていなければデフォルト3分）
+    duration_minutes = int(data.get('duration_minutes', 3))
     
     # 台本の取得
     scripts = session.get('scripts', [])
@@ -562,6 +564,10 @@ def bedrock_analyze_script():
         # 分析結果を保存
         script_data['analysis'] = analysis_result['analysis']
         script_data['passed'] = analysis_result['passed']
+        # 動画時間パラメータを保存
+        script_data['duration_minutes'] = duration_minutes
+        logging.info(f"台本に動画時間を保存: {duration_minutes}分")
+        
         scripts[chapter_index] = script_data
         session['scripts'] = scripts
         
@@ -682,9 +688,11 @@ def bedrock_submit_feedback():
                     actual_chars = len(script_content)
                     logging.info(f"補完処理後の文字数: {actual_chars}文字")
                 
-                # 処理済みのcontent_scriptを設定
-                script_data['improved_script'] = script_content
-                logging.info(f"台本の改善と補完が完了しました。improved_script キーを設定しました。最終長さ={len(script_data['improved_script'])}")
+                # 処理済みのcontent_scriptを設定（最終サニタイズ処理を適用）
+                from src.claude3_video_analyzer import sanitize_script
+                sanitized_content = sanitize_script(script_content)
+                script_data['improved_script'] = sanitized_content
+                logging.info(f"台本の改善と補完が完了しました。最終サニタイズ適用済み。最終長さ={len(script_data['improved_script'])}")
                 
                 # 最終的な文字数チェックとログ出力
                 actual_chars = len(script_data['improved_script'])
@@ -707,9 +715,11 @@ def bedrock_submit_feedback():
                     actual_chars = len(script_content)
                     logging.info(f"補完処理後の文字数: {actual_chars}文字")
                 
-                # 処理済みのcontent_scriptを設定
-                script_data['improved_script'] = script_content
-                logging.info(f"台本の改善と補完が完了しました。improved_script キーを設定しました。最終長さ={len(script_data['improved_script'])}")
+                # 処理済みのcontent_scriptを設定（最終サニタイズ処理を適用）
+                from src.claude3_video_analyzer import sanitize_script
+                sanitized_content = sanitize_script(script_content)
+                script_data['improved_script'] = sanitized_content
+                logging.info(f"台本の改善と補完が完了しました。最終サニタイズ適用済み。最終長さ={len(script_data['improved_script'])}")
                 
                 # 最終的な文字数チェックとログ出力
                 actual_chars = len(script_data['improved_script'])
@@ -769,6 +779,8 @@ def bedrock_apply_improvement():
         return jsonify({"error": "章のインデックスが指定されていません"}), 400
         
     chapter_index = int(data['chapter_index'])  # 明示的に整数型に変換
+    # 動画時間パラメータを取得（設定されていなければデフォルト3分）
+    duration_minutes = int(data.get('duration_minutes', 3))
     
     # セッションIDの確認
     if 'session_id' not in session:
@@ -819,6 +831,10 @@ def bedrock_apply_improvement():
         logging.info(f"改善された台本を適用します。長さ={len(script_data['improved_script'])}")
         script_data['script_content'] = script_data['improved_script']
         script_data['status'] = "completed"  # 「編集完了」ステータスに変更
+        
+        # 動画時間パラメータを保存
+        script_data['duration_minutes'] = duration_minutes
+        logging.info(f"台本に動画時間を保存: {duration_minutes}分")
         
         # 更新後は改善台本キーを削除
         del script_data['improved_script']

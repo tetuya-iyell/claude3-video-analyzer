@@ -384,6 +384,13 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // スクリプトデータを表示
     function displayScript(script) {
+        // 動画時間の設定を更新（保存されている値があれば）
+        const durationInput = document.getElementById('duration-input');
+        if (script.duration_minutes) {
+            durationInput.value = script.duration_minutes;
+            console.log(`動画時間を更新: ${script.duration_minutes}分`);
+        }
+        
         // 改善された台本がある場合は、台本欄に表示し、適用ボタンも表示
         if (script.improved_script) {
             // 元の台本を保存
@@ -517,6 +524,10 @@ document.addEventListener('DOMContentLoaded', () => {
         analysisResult.textContent = '台本を分析中...';
         analysisResult.classList.remove('hidden');
         
+        // 動画時間を取得（分単位）
+        const durationInput = document.getElementById('duration-input');
+        const durationMinutes = parseInt(durationInput.value) || 3;
+        
         fetch('/api/bedrock-scripts/analyze-script', {
             method: 'POST',
             headers: {
@@ -524,7 +535,8 @@ document.addEventListener('DOMContentLoaded', () => {
             },
             body: JSON.stringify({
                 chapter_index: currentChapterIndex,
-                script_content: scriptContent
+                script_content: scriptContent,
+                duration_minutes: durationMinutes // 動画時間パラメータを追加
             })
         })
         .then(response => response.json())
@@ -562,6 +574,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // フィードバックを取得（空でも可）
         const feedbackText = feedbackTextarea.value || '承認しました。';
         
+        // 動画時間を取得（分単位）
+        const durationInput = document.getElementById('duration-input');
+        const durationMinutes = parseInt(durationInput.value) || 3;
+        
         fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
             headers: {
@@ -570,7 +586,8 @@ document.addEventListener('DOMContentLoaded', () => {
             body: JSON.stringify({
                 chapter_index: currentChapterIndex,
                 feedback: feedbackText,
-                is_approved: true
+                is_approved: true,
+                duration_minutes: durationMinutes // 動画時間パラメータを追加
             })
         })
         .then(response => response.json())
@@ -637,6 +654,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // ステータスを更新
         updateScriptStatus('rejected');
         
+        // 動画時間を取得（分単位）
+        const durationInput = document.getElementById('duration-input');
+        const durationMinutes = parseInt(durationInput.value) || 3;
+        
         fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
             headers: {
@@ -645,7 +666,8 @@ document.addEventListener('DOMContentLoaded', () => {
             body: JSON.stringify({
                 chapter_index: currentChapterIndex,
                 feedback: feedbackText,
-                is_approved: false
+                is_approved: false,
+                duration_minutes: durationMinutes // 動画時間パラメータを追加
             })
         })
         .then(response => response.json())
@@ -749,13 +771,18 @@ document.addEventListener('DOMContentLoaded', () => {
         scriptTextarea.style.display = 'none';
         scriptContainer.appendChild(loadingAnimation);
         
+        // 動画時間を取得（分単位）
+        const durationInput = document.getElementById('duration-input');
+        const durationMinutes = parseInt(durationInput.value) || 3;
+        
         fetch('/api/bedrock-scripts/apply-improvement', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                chapter_index: currentChapterIndex
+                chapter_index: currentChapterIndex,
+                duration_minutes: durationMinutes // 動画時間パラメータを追加
             })
         })
         .then(response => response.json())
