@@ -1230,8 +1230,10 @@ class ScriptGenerator:
                                         style_hint = "お笑い風（ボケとツッコミの掛け合い、面白い例え話を含める）で"
                                         break
                             
-                            # 目標文字数を明確に指定
-                            target_chars = self.calculate_expected_length(script_data.get('duration_minutes', 10))
+                            # 動画時間を正確に取得し、目標文字数を明確に指定
+                            duration_minutes = script_data.get('duration_minutes', 3)
+                            logger.info(f"台本改善の正しい動画時間設定: {duration_minutes}分")
+                            target_chars = self.calculate_expected_length(duration_minutes)
                             
                             # 強化されたプロンプト（タイムアウトを避けるため1回で十分な長さを生成）
                             enhanced_prompt = f"""
@@ -1256,6 +1258,7 @@ class ScriptGenerator:
 - 台詞をリアルに聞こえるよう自然な会話調で書いてください
 
 # 文字数要件（最重要）
+- この台本は{duration_minutes}分の動画用です（これは重要な情報です）
 - 【絶対条件】：台本は必ず{target_chars}文字以上になるようにしてください
 - 台本が短い場合は、具体例の追加、メリット・デメリットの詳細な説明、関連知識の補足で拡充してください
 - 最低でも{target_chars}文字の台本を作成してください
@@ -1349,6 +1352,15 @@ class ScriptGenerator:
                         # スクリプトを精査して余分な情報を除去
                         cleaned_script = improved_script
                         
+                        # EventStreamオブジェクト文字列を検出して除去
+                        if '<botocore.eventstream.EventStream' in improved_script:
+                            logger.warning("EventStreamオブジェクトの文字列表現が台本に混入しています。除去します。")
+                            import re
+                            # EventStreamオブジェクト文字列のパターンを検出して削除
+                            pattern = r'<botocore\.eventstream\.EventStream[^>]+>'
+                            cleaned_script = re.sub(pattern, '', cleaned_script)
+                            logger.info(f"EventStream文字列を削除しました。新しい長さ: {len(cleaned_script)}文字")
+                        
                         # JSONやトレース情報が含まれているかチェック
                         if '{' in improved_script and '}' in improved_script and ('trace' in improved_script or 'completion' in improved_script):
                             try:
@@ -1389,6 +1401,7 @@ class ScriptGenerator:
 - 現在の台本をベースにして、必要な文字数になるまで自然に拡充してください
 - 不足している文字数を確実に補うため、{target_chars - actual_chars + 100}文字程度を追加してください（多めに追加）
 - 必ず台本全体を返してください（追加部分だけでなく、既存部分も含めた完全な台本）
+- この台本は{duration_minutes}分の動画用です（これは重要な情報です）
 
 # 拡充すべき内容（以下から2-3項目を選んで詳しく追加してください）
 1. コンテナハウスの具体的な事例と施工例（実際の価格、サイズ、完成までの期間、施工事例の写真など）
@@ -1671,9 +1684,22 @@ class ScriptGenerator:
                                                 logger.info(f"2回目: 非辞書型レスポンス、文字列表現を試行")
                                                 # EventStreamを文字列として安全に扱う
                                                 try:
-                                                    # 文字列表現を取得（先頭1000文字まで）
-                                                    str_representation = str(second_response)[:1000]
-                                                    logger.info(f"2回目: レスポンス文字列表現: {str_representation[:100]}...")
+                                                    # EventStreamを直接文字列化しないように注意する
+                                                    if hasattr(second_response, '__class__'):
+                                                        class_name = second_response.__class__.__name__
+                                                        logger.info(f"2回目: レスポンスクラス名: {class_name}")
+                                                        if 'EventStream' in class_name:
+                                                            logger.warning(f"EventStreamオブジェクトを検出しました。直接の文字列化は避けて内容を抽出します。")
+                                                            # EventStreamの内容を安全に抽出するコードに切り替え
+                                                            # 文字列表現せずに中身を抽出
+                                                        else:
+                                                            # 文字列表現を取得（先頭1000文字まで）
+                                                            str_representation = str(second_response)[:1000]
+                                                            logger.info(f"2回目: レスポンス文字列表現: {str_representation[:100]}...")
+                                                    else:
+                                                        # 文字列表現を取得（先頭1000文字まで）
+                                                        str_representation = str(second_response)[:1000]
+                                                        logger.info(f"2回目: レスポンス文字列表現: {str_representation[:100]}...")
                                                     
                                                     # 文字列表現からcompletionキーを探す
                                                     if "completion" in str_representation:
@@ -1794,7 +1820,9 @@ class ScriptGenerator:
                                 break
                     
                     # 目標文字数を明確に指定
-                    target_chars = self.calculate_expected_length(script_data.get('duration_minutes', 10))
+                    duration_minutes = script_data.get('duration_minutes', 3)
+                    logger.info(f"最終フォールバックでの動画時間設定: {duration_minutes}分")
+                    target_chars = self.calculate_expected_length(duration_minutes)
                     
                     # 強化されたプロンプト
                     enhanced_prompt = f"""
@@ -1819,6 +1847,7 @@ class ScriptGenerator:
 - 台詞をリアルに聞こえるよう自然な会話調で書いてください
 
 # 文字数要件（最重要）
+- この台本は{duration_minutes}分の動画用です（これは重要な情報です）
 - 【絶対条件】：台本は必ず{target_chars}文字以上になるようにしてください
 - 台本が短い場合は、具体例の追加、メリット・デメリットの詳細な説明、関連知識の補足で拡充してください
 - 最低でも{target_chars}文字の台本を作成してください
