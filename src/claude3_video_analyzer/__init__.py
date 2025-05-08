@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple, Union
 from dotenv import load_dotenv
 from .aws_retry import aws_api_retry
+from .aws_credentials import with_aws_credential_refresh
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -608,6 +609,7 @@ class ScriptGenerator:
             
         return chapters
     
+    @with_aws_credential_refresh
     def generate_script_for_chapter(self, chapter: Dict[str, str], duration_minutes: int = 3) -> Dict[str, str]:
         """各章の台本を生成
         
@@ -630,17 +632,60 @@ class ScriptGenerator:
         # Bedrockモードの場合はBedrockを使用
         if self.analyzer.use_bedrock:
             try:
+                # 認証情報の有効性確認
+                if hasattr(self.analyzer, 'credential_manager') and self.analyzer.credential_manager:
+                    self.analyzer.credential_manager.check_credentials()
+                
                 # Bedrockモデル呼び出し
-                response = self.analyzer.bedrock_runtime.invoke_model(
-                    modelId=self.analyzer.model,
-                    body=json.dumps({
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ]
-                    })
-                )
+                try:
+                    response = self.analyzer.bedrock_runtime.invoke_model(
+                        modelId=self.analyzer.model,
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 5000,  # 大幅に増加（最大10分の動画で約2000〜2500文字必要）
+                            "messages": [
+                                {"role": "user", "content": prompt}
+                            ]
+                        })
+                    )
+                except Exception as e:
+                    error_msg = str(e)
+                    if "UnrecognizedClientException" in error_msg or "security token" in error_msg.lower():
+                        # セキュリティトークンエラーの場合、詳細なエラーメッセージを提供
+                        logger.error("AWS認証エラー: セキュリティトークンが無効です")
+                        logger.error("認証情報をリフレッシュして再試行します...")
+                        
+                        # 認証情報マネージャーがある場合は強制的にリフレッシュ
+                        if hasattr(self.analyzer, 'credential_manager') and self.analyzer.credential_manager:
+                            self.analyzer.credential_manager.refresh_credentials()
+                            # クライアントを再作成
+                            import botocore
+                            client_config = botocore.config.Config(
+                                connect_timeout=30,
+                                read_timeout=120,
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},
+                                max_pool_connections=20,
+                                tcp_keepalive=True
+                            )
+                            self.analyzer.bedrock_runtime = self.analyzer.credential_manager.get_client(
+                                'bedrock-runtime', config=client_config
+                            )
+                            # リフレッシュ後に再試行
+                            response = self.analyzer.bedrock_runtime.invoke_model(
+                                modelId=self.analyzer.model,
+                                body=json.dumps({
+                                    "anthropic_version": "bedrock-2023-05-31",
+                                    "max_tokens": 5000,
+                                    "messages": [
+                                        {"role": "user", "content": prompt}
+                                    ]
+                                })
+                            )
+                        else:
+                            raise ConnectionError("AWS認証エラー: セキュリティトークンが無効で、認証情報マネージャーがありません") from e
+                    else:
+                        # その他のエラーはそのまま伝播
+                        raise
                 
                 # レスポンスの解析
                 response_body = json.loads(response.get('body').read())
@@ -652,8 +697,16 @@ class ScriptGenerator:
                 
                 logger.info(f"章「{chapter['chapter_title']}」の台本生成が完了: 文字数={actual_chars}（目標: {target_chars}）")
             except Exception as e:
-                logger.error(f"台本生成中にエラーが発生: {str(e)}")
-                raise
+                # エラーメッセージから認証エラーを検出
+                error_text = str(e).lower()
+                if ('security token' in error_text and 'invalid' in error_text) or \
+                   'unrecognized client' in error_text or 'expired token' in error_text:
+                    # 認証情報を更新してユーザーフレンドリーなエラーメッセージを表示
+                    logger.error(f"台本生成中のAWS認証エラー: {str(e)}")
+                    raise ConnectionError("AWS認証情報の有効期限が切れているか、無効です。AWS認証情報を更新してください。") from e
+                else:
+                    logger.error(f"台本生成中にエラーが発生: {str(e)}")
+                    raise
         else:
             # Anthropic APIの場合
             try:
@@ -674,11 +727,13 @@ class ScriptGenerator:
             "chapter_summary": chapter["chapter_summary"],
             "script_content": script_content,
             "status": "review",
-            "feedback": []
+            "feedback": [],
+            "duration_minutes": duration_minutes  # 動画時間を追加
         }
         
         return script_data
         
+    @with_aws_credential_refresh
     def analyze_script_quality(self, script_data: Dict[str, str]) -> Dict[str, Any]:
         """台本の品質を分析する
         
@@ -717,17 +772,60 @@ class ScriptGenerator:
         # Bedrockモードの場合はBedrockを使用
         if self.analyzer.use_bedrock:
             try:
+                # 認証情報の有効性確認
+                if hasattr(self.analyzer, 'credential_manager') and self.analyzer.credential_manager:
+                    self.analyzer.credential_manager.check_credentials()
+                
                 # Bedrockモデル呼び出し
-                response = self.analyzer.bedrock_runtime.invoke_model(
-                    modelId=self.analyzer.model,
-                    body=json.dumps({
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 1000,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ]
-                    })
-                )
+                try:
+                    response = self.analyzer.bedrock_runtime.invoke_model(
+                        modelId=self.analyzer.model,
+                        body=json.dumps({
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 1000,
+                            "messages": [
+                                {"role": "user", "content": prompt}
+                            ]
+                        })
+                    )
+                except Exception as e:
+                    error_msg = str(e)
+                    if "UnrecognizedClientException" in error_msg or "security token" in error_msg.lower():
+                        # セキュリティトークンエラーの場合、詳細なエラーメッセージを提供
+                        logger.error("AWS認証エラー: セキュリティトークンが無効です")
+                        logger.error("認証情報をリフレッシュして再試行します...")
+                        
+                        # 認証情報マネージャーがある場合は強制的にリフレッシュ
+                        if hasattr(self.analyzer, 'credential_manager') and self.analyzer.credential_manager:
+                            self.analyzer.credential_manager.refresh_credentials()
+                            # クライアントを再作成
+                            import botocore
+                            client_config = botocore.config.Config(
+                                connect_timeout=30,
+                                read_timeout=120,
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},
+                                max_pool_connections=20,
+                                tcp_keepalive=True
+                            )
+                            self.analyzer.bedrock_runtime = self.analyzer.credential_manager.get_client(
+                                'bedrock-runtime', config=client_config
+                            )
+                            # リフレッシュ後に再試行
+                            response = self.analyzer.bedrock_runtime.invoke_model(
+                                modelId=self.analyzer.model,
+                                body=json.dumps({
+                                    "anthropic_version": "bedrock-2023-05-31",
+                                    "max_tokens": 1000,
+                                    "messages": [
+                                        {"role": "user", "content": prompt}
+                                    ]
+                                })
+                            )
+                        else:
+                            raise ConnectionError("AWS認証エラー: セキュリティトークンが無効で、認証情報マネージャーがありません") from e
+                    else:
+                        # その他のエラーはそのまま伝播
+                        raise
                 
                 # レスポンスの解析
                 response_body = json.loads(response.get('body').read())
@@ -738,8 +836,16 @@ class ScriptGenerator:
                 
                 logger.info(f"台本「{script_data['chapter_title']}」の品質分析が完了")
             except Exception as e:
-                logger.error(f"台本品質分析中にエラーが発生: {str(e)}")
-                raise
+                # エラーメッセージから認証エラーを検出
+                error_text = str(e).lower()
+                if ('security token' in error_text and 'invalid' in error_text) or \
+                   'unrecognized client' in error_text or 'expired token' in error_text:
+                    # 認証情報を更新してユーザーフレンドリーなエラーメッセージを表示
+                    logger.error(f"台本品質分析中のAWS認証エラー: {str(e)}")
+                    raise ConnectionError("AWS認証情報の有効期限が切れているか、無効です。AWS認証情報を更新してください。") from e
+                else:
+                    logger.error(f"台本品質分析中にエラーが発生: {str(e)}")
+                    raise
         else:
             # Anthropic APIの場合
             try:
@@ -760,6 +866,7 @@ class ScriptGenerator:
             "analysis": analysis
         }
     
+    @with_aws_credential_refresh
     def improve_script(self, script_data: Dict[str, str], feedback: str) -> Dict[str, str]:
         """フィードバックに基づいて台本を改善する
         
@@ -2482,6 +2589,9 @@ class VideoAnalyzer:
         import time
         self.time_module = time
 
+        # 認証情報マネージャー
+        self.credential_manager = None
+
         # Anthropicクライアント用の設定
         if self.mode == "anthropic":
             api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -2495,64 +2605,24 @@ class VideoAnalyzer:
 
         # AWS Bedrockクライアント用の設定
         elif self.mode == "bedrock":
-            aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
-            aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+            # AWS認証情報マネージャーの初期化
+            from .aws_credentials import CredentialManager
             aws_region = os.getenv("AWS_REGION", "us-east-1")
+            self.credential_manager = CredentialManager(region_name=aws_region)
+            self.region_name = aws_region  # リージョン名を保存
             
-            # 認証情報がない場合はデフォルト認証情報チェーンを使用
-            # (~/.aws/credentials や環境変数など)
-            if aws_access_key is None or aws_secret_key is None:
-                logger.info("環境変数に認証情報がないため、AWS認証情報チェーンを使用します (~/.aws/credentials など)")
-            
-
             # Bedrockクライアントの初期化
             try:
-                # AWS認証情報の設定を確認
-                # Bedrockが利用可能な特定のリージョンを使用
-                # まずは環境変数のリージョンを使用し、なければus-east-1をデフォルトとする
-                aws_region = os.getenv("AWS_REGION", "us-east-1")
-                # Bedrockモデルが利用可能な他のリージョンも検討
+                # 認証情報マネージャーから有効なセッションを取得
+                if not self.credential_manager.session:
+                    raise ValueError("有効なAWS認証情報が取得できませんでした")
+                    
+                # 利用可能なリージョンのログ出力
                 available_regions = ["us-east-1", "us-west-2", "eu-central-1", "ap-northeast-1"]
                 logger.info(f"設定されたリージョン: {aws_region}")
-                
-                # デフォルト認証情報チェーンを使用
-                if aws_access_key and aws_secret_key:
-                    # 環境変数に認証情報がある場合はそれを使用
-                    logger.info("AWS環境変数の認証情報を使用します")
-                    logger.info(f"使用するリージョン: {aws_region}")
-                    boto3_session = boto3.Session(
-                        aws_access_key_id=aws_access_key,
-                        aws_secret_access_key=aws_secret_key,
-                        region_name=aws_region,
-                    )
-                else:
-                    # AWS認証情報チェーンを使用 (~/.aws/credentials を含む)
-                    logger.info("AWSデフォルト認証情報チェーンを使用します (~/.aws/credentials)")
-                    try:
-                        # デフォルト認証情報プロバイダーチェーンをデバッグ
-                        home_dir = os.path.expanduser("~")
-                        aws_creds_file = os.path.join(home_dir, ".aws", "credentials")
-                        if os.path.exists(aws_creds_file):
-                            logger.info(f"AWS認証情報ファイルが存在します: {aws_creds_file}")
-                        else:
-                            logger.warning(f"AWS認証情報ファイルが見つかりません: {aws_creds_file}")
-                    except Exception as e:
-                        logger.warning(f"AWS認証情報ファイルのチェック中にエラーが発生しました: {str(e)}")
-                        
-                    boto3_session = boto3.Session(region_name=aws_region)
-                    sts = boto3_session.client('sts')
-                    try:
-                        identity = sts.get_caller_identity()
-                        logger.info(f"AWS認証情報チェーン使用中のIAMユーザー: {identity.get('Arn')}")
-                    except Exception as e:
-                        logger.warning(f"IAMユーザー情報の取得に失敗しました: {str(e)}")
+                logger.info(f"Bedrock利用可能リージョン: {', '.join(available_regions)}")
 
-                # Bedrockランタイムクライアントの作成
-                self.bedrock_runtime = boto3_session.client(
-                    service_name="bedrock-runtime",
-                )
-                
-                # Bedrock Agentクライアントの作成 - リージョン指定とタイムアウト設定を明示
+                # Bedrockランタイムクライアントの作成 - 認証情報マネージャーを使用
                 import botocore
                 client_config = botocore.config.Config(
                     connect_timeout=30,    # 接続タイムアウト30秒
@@ -2562,14 +2632,35 @@ class VideoAnalyzer:
                     tcp_keepalive=True      # TCP接続をキープアライブ
                 )
                 
-                self.bedrock_agent_client = boto3_session.client(
-                    service_name="bedrock-agent-runtime",
-                    region_name="us-east-1",  # 明示的にus-east-1を指定
-                    config=client_config       # タイムアウト設定を追加
+                self.bedrock_runtime = self.credential_manager.get_client(
+                    'bedrock-runtime', config=client_config
+                )
+                
+                # Bedrock Agentクライアントの作成 - 認証情報マネージャーを使用
+                agent_config = botocore.config.Config(
+                    connect_timeout=30,    # 接続タイムアウト30秒
+                    read_timeout=120,      # 読み取りタイムアウト120秒
+                    retries={'max_attempts': 5, 'mode': 'adaptive'},  # 最大リトライ回数増加 + アダプティブモード
+                    max_pool_connections=20, # 接続プールを拡大
+                    tcp_keepalive=True      # TCP接続をキープアライブ
+                )
+                
+                self.bedrock_agent_client = self.credential_manager.get_client(
+                    'bedrock-agent-runtime', config=agent_config
                 )
                 
                 logger.info("Bedrock Agentクライアントの初期化に成功しました")
                 self.use_bedrock = True
+                
+                # 認証情報が有効かどうか確認するためのテスト呼び出し
+                try:
+                    sts = self.credential_manager.session.client('sts')
+                    identity = sts.get_caller_identity()
+                    logger.info(f"AWS認証情報が有効です: {identity.get('Arn')}")
+                except Exception as e:
+                    logger.warning(f"AWS認証情報の検証中に問題が発生しました: {str(e)}")
+                    logger.warning("AWS APIコール実行時に認証情報が自動的にリフレッシュされます")
+                
             except Exception as e:
                 logger.error(f"Bedrockクライアントの初期化エラー: {str(e)}")
                 raise ConnectionError(f"Bedrockクライアントの初期化エラー: {str(e)}")
@@ -2676,6 +2767,7 @@ class VideoAnalyzer:
             selected_frames = base64_frames[0::step][:max_images]
             return selected_frames, buffer
 
+    @with_aws_credential_refresh
     def analyze_video(
         self, file_path, prompt=None, model=None, max_images=20, stream_callback=None
     ):
@@ -2753,6 +2845,10 @@ class VideoAnalyzer:
             )
 
             try:
+                # 認証情報の有効性確認
+                if hasattr(self, 'credential_manager') and self.credential_manager:
+                    self.credential_manager.check_credentials()
+                
                 # ストリーミングAPIが拒否されているため、通常の同期APIを使用
                 logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                 
@@ -2774,6 +2870,32 @@ class VideoAnalyzer:
                         logger.error("2. Bedrock APIへのアクセス権限を追加 (bedrock:InvokeModel)")
                         logger.error("3. 特に anthropic.claude-3-5-sonnet-20240620-v1:0 へのアクセスを確保")
                         raise ConnectionError("AWS Bedrock API権限エラー: AWS IAM権限の設定が必要です") from e
+                    elif "UnrecognizedClientException" in error_msg or "security token" in error_msg.lower():
+                        # セキュリティトークンエラーの場合、詳細なエラーメッセージを提供
+                        logger.error("AWS認証エラー: セキュリティトークンが無効です")
+                        logger.error("認証情報をリフレッシュして再試行します...")
+                        
+                        # 認証情報マネージャーがある場合は強制的にリフレッシュ
+                        if hasattr(self, 'credential_manager') and self.credential_manager:
+                            self.credential_manager.refresh_credentials()
+                            # クライアントを再作成
+                            import botocore
+                            client_config = botocore.config.Config(
+                                connect_timeout=30,
+                                read_timeout=120,
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},
+                                max_pool_connections=20,
+                                tcp_keepalive=True
+                            )
+                            self.bedrock_runtime = self.credential_manager.get_client(
+                                'bedrock-runtime', config=client_config
+                            )
+                            # リフレッシュ後に再試行
+                            response = self.bedrock_runtime.invoke_model(
+                                modelId=model, body=body
+                            )
+                        else:
+                            raise ConnectionError("AWS認証エラー: セキュリティトークンが無効で、認証情報マネージャーがありません") from e
                     else:
                         # その他のエラーはそのまま伝播
                         raise
@@ -2798,10 +2920,19 @@ class VideoAnalyzer:
                                     import time
                                     time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
-                raise RuntimeError(f"Bedrock API error: {str(e)}")
+                # エラーメッセージから認証エラーを検出
+                error_text = str(e).lower()
+                if ('security token' in error_text and 'invalid' in error_text) or \
+                   'unrecognized client' in error_text or 'expired token' in error_text:
+                    # 認証情報を更新してユーザーフレンドリーなエラーメッセージを表示
+                    logger.error(f"AWS認証エラー: {str(e)}")
+                    raise ConnectionError("AWS認証情報の有効期限が切れているか、無効です。AWS認証情報を更新してください。") from e
+                else:
+                    raise RuntimeError(f"Bedrock API error: {str(e)}")
 
         return result_text
 
+    @with_aws_credential_refresh
     def analyze_video_with_chapters(
         self, file_path, prompt=None, model=None, max_images=20, stream_callback=None
     ):
@@ -2879,6 +3010,10 @@ class VideoAnalyzer:
             )
 
             try:
+                # 認証情報の有効性確認
+                if hasattr(self, 'credential_manager') and self.credential_manager:
+                    self.credential_manager.check_credentials()
+                
                 # ストリーミングAPIが拒否されているため、通常の同期APIを使用
                 logger.info("ストリーミングAPIが利用できないため、通常のAPIを使用します")
                 
@@ -2900,6 +3035,32 @@ class VideoAnalyzer:
                         logger.error("2. Bedrock APIへのアクセス権限を追加 (bedrock:InvokeModel)")
                         logger.error("3. 特に anthropic.claude-3-5-sonnet-20240620-v1:0 へのアクセスを確保")
                         raise ConnectionError("AWS Bedrock API権限エラー: AWS IAM権限の設定が必要です") from e
+                    elif "UnrecognizedClientException" in error_msg or "security token" in error_msg.lower():
+                        # セキュリティトークンエラーの場合、詳細なエラーメッセージを提供
+                        logger.error("AWS認証エラー: セキュリティトークンが無効です")
+                        logger.error("認証情報をリフレッシュして再試行します...")
+                        
+                        # 認証情報マネージャーがある場合は強制的にリフレッシュ
+                        if hasattr(self, 'credential_manager') and self.credential_manager:
+                            self.credential_manager.refresh_credentials()
+                            # クライアントを再作成
+                            import botocore
+                            client_config = botocore.config.Config(
+                                connect_timeout=30,
+                                read_timeout=120,
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},
+                                max_pool_connections=20,
+                                tcp_keepalive=True
+                            )
+                            self.bedrock_runtime = self.credential_manager.get_client(
+                                'bedrock-runtime', config=client_config
+                            )
+                            # リフレッシュ後に再試行
+                            response = self.bedrock_runtime.invoke_model(
+                                modelId=model, body=body
+                            )
+                        else:
+                            raise ConnectionError("AWS認証エラー: セキュリティトークンが無効で、認証情報マネージャーがありません") from e
                     else:
                         # その他のエラーはそのまま伝播
                         raise
@@ -2924,6 +3085,14 @@ class VideoAnalyzer:
                                     import time
                                     time.sleep(0.05)  # 少し待機して疑似ストリーミング
             except Exception as e:
-                raise RuntimeError(f"Bedrock API error: {str(e)}")
+                # エラーメッセージから認証エラーを検出
+                error_text = str(e).lower()
+                if ('security token' in error_text and 'invalid' in error_text) or \
+                   'unrecognized client' in error_text or 'expired token' in error_text:
+                    # 認証情報を更新してユーザーフレンドリーなエラーメッセージを表示
+                    logger.error(f"AWS認証エラー: {str(e)}")
+                    raise ConnectionError("AWS認証情報の有効期限が切れているか、無効です。AWS認証情報を更新してください。") from e
+                else:
+                    raise RuntimeError(f"Bedrock API error: {str(e)}")
 
         return result_text
