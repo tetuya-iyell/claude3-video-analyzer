@@ -261,10 +261,11 @@ class ScriptGenerator:
                     # AWS SDKの最適化されたクライアント設定
                     import botocore
                     client_config = botocore.config.Config(
-                        connect_timeout=15,  # 接続タイムアウト増加
-                        read_timeout=30,     # 読み取りタイムアウト増加
-                        retries={'max_attempts': 3, 'mode': 'adaptive'},  # アダプティブリトライ
-                        max_pool_connections=10 # 接続プール拡大
+                        connect_timeout=30,  # 接続タイムアウト大幅増加
+                        read_timeout=120,    # 読み取りタイムアウト大幅増加
+                        retries={'max_attempts': 5, 'mode': 'adaptive'},  # アダプティブリトライ回数増加
+                        max_pool_connections=20, # 接続プール拡大
+                        tcp_keepalive=True   # TCP接続をキープアライブ
                     )
                     
                     # タイムアウト設定付きのクライアントで呼び出し
@@ -417,10 +418,11 @@ class ScriptGenerator:
                             # 最適化したタイムアウト設定でセクション追加リクエスト
                             import botocore
                             client_config = botocore.config.Config(
-                                connect_timeout=15,     # 接続タイムアウトを増加
-                                read_timeout=30,        # 読み取りタイムアウトを増加
-                                retries={'max_attempts': 3, 'mode': 'adaptive'},  # アダプティブリトライ
-                                max_pool_connections=10 # 接続プール増加
+                                connect_timeout=30,     # 接続タイムアウトを大幅増加
+                                read_timeout=120,       # 読み取りタイムアウトを大幅増加
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},  # アダプティブリトライ回数増加
+                                max_pool_connections=20, # 接続プール拡大
+                                tcp_keepalive=True      # TCP接続をキープアライブ
                             )
                             
                             temp_client = boto3.client(
@@ -879,10 +881,11 @@ class ScriptGenerator:
                             # 最適化されたタイムアウト設定でAgentを呼び出し
                             import botocore
                             client_config = botocore.config.Config(
-                                connect_timeout=15,     # 接続タイムアウトを増加（15秒）
-                                read_timeout=60,        # 読み取りタイムアウトを大幅増加（60秒）
-                                retries={'max_attempts': 3, 'mode': 'adaptive'},  # アダプティブリトライ
-                                max_pool_connections=10  # 接続プールサイズ増加
+                                connect_timeout=30,     # 接続タイムアウトを大幅増加（30秒）
+                                read_timeout=180,       # 読み取りタイムアウトを大幅増加（180秒）
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},  # アダプティブリトライ回数増加
+                                max_pool_connections=20, # 接続プール拡大
+                                tcp_keepalive=True      # TCP接続をキープアライブ
                             )
                             
                             # 最適化されたクライアント設定で新しいクライアントを作成
@@ -1555,10 +1558,11 @@ class ScriptGenerator:
                             # タイムアウト設定を追加
                             import botocore
                             client_config = botocore.config.Config(
-                                connect_timeout=15,    # 接続タイムアウト増加
-                                read_timeout=60,       # 読み取りタイムアウト大幅増加
-                                retries={'max_attempts': 3, 'mode': 'adaptive'},  # アダプティブリトライ
-                                max_pool_connections=10  # 接続プール拡大
+                                connect_timeout=30,    # 接続タイムアウト大幅増加
+                                read_timeout=180,      # 読み取りタイムアウト大幅増加
+                                retries={'max_attempts': 5, 'mode': 'adaptive'},  # アダプティブリトライ回数増加
+                                max_pool_connections=20, # 接続プール拡大
+                                tcp_keepalive=True     # TCP接続をキープアライブ
                             )
                             
                             # 最適化された設定で一時クライアントを作成
@@ -1835,10 +1839,11 @@ class ScriptGenerator:
                                             # タイムアウト値を大きめに設定（60秒）+ 重要なパラメータ明示
                                             import botocore
                                             custom_config = botocore.config.Config(
-                                                connect_timeout=20,
-                                                read_timeout=60,
-                                                retries={'max_attempts': 3, 'mode': 'adaptive'},
-                                                max_pool_connections=10
+                                                connect_timeout=30,
+                                                read_timeout=180,
+                                                retries={'max_attempts': 5, 'mode': 'adaptive'},
+                                                max_pool_connections=20,
+                                                tcp_keepalive=True
                                             )
                                             
                                             # 最適化されたクライアントで呼び出し
@@ -2272,10 +2277,11 @@ class ScriptGenerator:
                         # 最適化された設定でクライアント作成
                         import botocore
                         client_config = botocore.config.Config(
-                            connect_timeout=15,    # 接続タイムアウト増加
-                            read_timeout=60,       # 読み取りタイムアウト大幅増加
-                            retries={'max_attempts': 3, 'mode': 'adaptive'},  # アダプティブリトライ
-                            max_pool_connections=10  # 接続プール拡大
+                            connect_timeout=30,    # 接続タイムアウト大幅増加
+                            read_timeout=180,      # 読み取りタイムアウト大幅増加
+                            retries={'max_attempts': 5, 'mode': 'adaptive'},  # アダプティブリトライ回数増加
+                            max_pool_connections=20, # 接続プール拡大
+                            tcp_keepalive=True      # TCP接続をキープアライブ
                         )
                         
                         # 最適化された設定でのクライアント
@@ -2549,9 +2555,11 @@ class VideoAnalyzer:
                 # Bedrock Agentクライアントの作成 - リージョン指定とタイムアウト設定を明示
                 import botocore
                 client_config = botocore.config.Config(
-                    connect_timeout=10,    # 接続タイムアウト10秒
-                    read_timeout=30,       # 読み取りタイムアウト30秒
-                    retries={'max_attempts': 3}  # 最大リトライ回数
+                    connect_timeout=30,    # 接続タイムアウト30秒
+                    read_timeout=120,      # 読み取りタイムアウト120秒
+                    retries={'max_attempts': 5, 'mode': 'adaptive'},  # 最大リトライ回数増加 + アダプティブモード
+                    max_pool_connections=20, # 接続プールを拡大
+                    tcp_keepalive=True      # TCP接続をキープアライブ
                 )
                 
                 self.bedrock_agent_client = boto3_session.client(
