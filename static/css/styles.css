@@ -248,9 +248,22 @@ textarea:focus {
     align-items: center;
     justify-content: center;
     padding: 2rem;
-    background-color: var(--secondary-color);
+    background-color: rgba(246, 246, 246, 0.8);
     border-radius: 8px;
     min-height: 200px;
+    margin: 1rem 0;
+    border: 1px dashed var(--primary-color);
+    box-shadow: 0 2px 10px rgba(111, 42, 142, 0.1);
+    animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+    0%, 100% {
+        border-color: rgba(111, 42, 142, 0.4);
+    }
+    50% {
+        border-color: rgba(111, 42, 142, 0.8);
+    }
 }
 
 .loading-dots {
@@ -260,8 +273,8 @@ textarea:focus {
 }
 
 .dot {
-    width: 12px;
-    height: 12px;
+    width: 15px;
+    height: 15px;
     margin: 0 6px;
     border-radius: 50%;
     background-color: var(--primary-color);
@@ -286,6 +299,13 @@ textarea:focus {
         transform: scale(1.2);
         opacity: 1;
     }
+}
+
+.script-loading-animation p {
+    font-weight: 500;
+    color: var(--primary-color);
+    margin-top: 0.5rem;
+    font-size: 1.1rem;
 }
 
 .secondary-button {
@@ -408,6 +428,24 @@ textarea:focus {
     border-left: 4px solid var(--error-color);
 }
 
+.chapter-item.generating {
+    background-color: rgba(111, 42, 142, 0.1);
+    border-left: 4px solid var(--primary-color);
+    animation: pulse-background 2s infinite;
+}
+
+@keyframes pulse-background {
+    0% {
+        background-color: rgba(111, 42, 142, 0.05);
+    }
+    50% {
+        background-color: rgba(111, 42, 142, 0.2);
+    }
+    100% {
+        background-color: rgba(111, 42, 142, 0.05);
+    }
+}
+
 .script-content {
     display: flex;
     flex-direction: column;
@@ -451,6 +489,71 @@ textarea:focus {
 .feedback-area:focus {
     outline: none;
     border-color: var(--primary-color);
+}
+
+/* フィードバックサブヘッダースタイル */
+.feedback-subheader {
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--primary-color);
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    display: none !important; /* 初期状態では非表示、優先度を最大に */
+}
+
+/* 非表示を強制的に適用するスタイル（特に修正履歴ヘッダー用） */
+#history-header {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* history-headerが明示的に表示される場合のみ表示する */
+#history-header[style*="display: block"] {
+    display: block !important;
+    visibility: visible !important;
+}
+
+/* 章ごとのフィードバック管理用スタイル */
+#feedback-wrapper {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    background-color: #f9f9f9;
+}
+
+#chapter-feedback-containers {
+    margin-top: 1rem;
+}
+
+.chapter-feedback-container {
+    border-top: 1px dashed var(--border-color);
+    padding-top: 1rem;
+    margin-top: 1rem;
+}
+
+.feedback-history-header {
+    font-size: 0.9rem;
+    color: var(--primary-color);
+    margin-bottom: 0.8rem;
+    font-weight: 600;
+}
+
+.feedback-list-container {
+    margin-bottom: 1rem;
+}
+
+.feedback-number {
+    font-weight: bold;
+    color: var(--primary-color);
+    margin-bottom: 0.3rem;
+}
+
+.no-feedback-message {
+    color: var(--light-text);
+    font-style: italic;
+    margin: 0.5rem 0;
 }
 
 .success-message {
@@ -504,6 +607,51 @@ footer {
     margin-top: 3rem;
     color: var(--light-text);
     font-size: 0.9rem;
+}
+
+/* トースト通知 */
+#toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.toast {
+    min-width: 250px;
+    max-width: 400px;
+    padding: 15px 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    color: white;
+    font-weight: 500;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.3s, transform 0.3s;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast.info {
+    background-color: #3498db;
+}
+
+.toast.success {
+    background-color: var(--success-color);
+}
+
+.toast.warning {
+    background-color: #f39c12;
+}
+
+.toast.error {
+    background-color: var(--error-color);
 }
 
 /* 台本生成コントロール追加スタイル */

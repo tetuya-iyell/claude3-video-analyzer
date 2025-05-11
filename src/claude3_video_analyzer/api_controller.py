@@ -10,6 +10,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from flask import jsonify, session, request
 # Import the sanitize_script function directly from the module
 from . import sanitize_script
+# Import DynamoDBClient
+from .dynamodb_client import DynamoDBClient
 
 # ロガー設定
 logger = logging.getLogger(__name__)
@@ -308,11 +310,45 @@ class APIController:
         script_data = scripts[chapter_index]
         
         try:
+            # 共通の処理：動画時間パラメータを保存
+            script_data['duration_minutes'] = duration_minutes
+
+            # DynamoDBクライアントを初期化
+            dynamodb_client = None
+            try:
+                dynamodb_client = DynamoDBClient()
+            except Exception as db_init_error:
+                # DynamoDBクライアントの初期化に失敗した場合はログに記録するが、処理は継続する
+                logger.error(f"DynamoDBクライアント初期化エラー: {str(db_init_error)}")
+
             # フィードバックの処理
             if is_approved:
                 # 承認の場合
                 script_data['status'] = "approved"
                 logger.info(f"台本を承認しました: chapter_index={chapter_index}")
+
+                # フィードバックがなければ空配列を初期化
+                if 'feedback' not in script_data:
+                    script_data['feedback'] = []
+
+                # 承認時のフィードバックも記録
+                if feedback_text and feedback_text != "承認しました。":
+                    script_data['feedback'].append(feedback_text)
+                    logger.info(f"承認時のフィードバックを追加: chapter_index={chapter_index}")
+
+                # 承認時はDynamoDBに保存
+                if dynamodb_client:
+                    try:
+                        # DynamoDBに台本を保存（環境変数の認証情報を使用）
+                        script_id = dynamodb_client.save_script(
+                            session_id=session_id,
+                            chapter_index=chapter_index,
+                            script_data=script_data
+                        )
+                        logger.info(f"承認された台本をDynamoDBに保存しました: session_id={session_id}, script_id={script_id}")
+                    except Exception as db_error:
+                        # DynamoDBへの保存に失敗した場合はログに記録するが、処理は継続する
+                        logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
             else:
                 # フィードバックの場合
                 script_data['status'] = "rejected"
@@ -320,30 +356,26 @@ class APIController:
                     script_data['feedback'] = []
                 script_data['feedback'].append(feedback_text)
                 logger.info(f"フィードバックを追加: chapter_index={chapter_index}, フィードバック数={len(script_data['feedback'])}")
-                
+
                 # 詳細なログ:改善前の状態
                 logger.info(f"台本改善前の状態:")
                 logger.info(f"  chapter_index: {chapter_index}")
                 logger.info(f"  status: {script_data['status']}")
                 logger.info(f"  script_content文字数: {len(script_data['script_content'])}")
                 logger.info(f"  'improved_script'キー: {'存在する' if 'improved_script' in script_data else '存在しない'}")
-                
+
                 if 'improved_script' in script_data:
                     logger.info(f"  既存のimproved_script文字数: {len(script_data['improved_script'])}")
                     # 次の改善リクエストで問題になるかもしれないので削除しておく
                     del script_data['improved_script']
                     logger.info(f"  既存のimproved_scriptを削除しました")
-                
+
                 # フィードバックに基づいて台本を改善
                 logger.info(f"台本改善処理を開始: フィードバック長さ={len(feedback_text)}")
-                
-                # 台本改善時に動画時間パラメータを渡すための処理
-                # スクリプトデータに動画時間を設定（改善関数内で使用可能にする）
-                script_data['duration_minutes'] = duration_minutes
-                
+
                 improved_script_content = self.script_generator.improve_script(script_data, feedback_text)
                 logger.info(f"台本改善処理が完了: 結果タイプ={type(improved_script_content)}")
-                
+
                 # 改善結果が文字列か辞書かで処理を分岐
                 if isinstance(improved_script_content, dict) and 'script_content' in improved_script_content:
                     # 辞書型の場合はscript_contentキーを使用
@@ -356,11 +388,25 @@ class APIController:
                     logger.error(f"予期しない台本改善結果の型: {type(improved_script_content)}")
                     # 安全策として元の台本を使用
                     script_content = script_data['script_content'] + "\n\n（フィードバックによる改善に失敗しました。手動で編集してください）"
-                
+
                 # 処理済みの台本をセット（最終サニタイズ処理を適用）
                 # sanitize_scriptはモジュールレベルの関数なので上部でインポート済み
                 sanitized_content = sanitize_script(script_content)
                 script_data['improved_script'] = sanitized_content
+
+                # 修正依頼時もDynamoDBに保存する（重要な改善点）
+                if dynamodb_client:
+                    try:
+                        # DynamoDBに台本を保存
+                        script_id = dynamodb_client.save_script(
+                            session_id=session_id,
+                            chapter_index=chapter_index,
+                            script_data=script_data
+                        )
+                        logger.info(f"修正依頼された台本をDynamoDBに保存しました: session_id={session_id}, script_id={script_id}")
+                    except Exception as db_error:
+                        # DynamoDBへの保存に失敗した場合はログに記録するが、処理は継続する
+                        logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
             
             # 変更を保存
             scripts[chapter_index] = script_data
@@ -476,20 +522,37 @@ class APIController:
             
             # 変更を保存
             scripts[chapter_index] = script_data
-            
+
             # 詳細なデバッグ情報を出力
             logger.info(f"台本を改善版で更新します - 詳細状態:")
             logger.info(f"  chapter_index: {chapter_index}")
             logger.info(f"  更新後status: {script_data['status']}")
             logger.info(f"  script_content文字数: {len(script_data['script_content'])}")
             logger.info(f"  'improved_script'キーの削除: 完了")
-            
+
             # ファイルに保存
             with open(scripts_file, 'w', encoding='utf-8') as f:
                 json.dump(scripts, f, ensure_ascii=False)
-                
+
+            # DynamoDBに台本を保存
+            try:
+                # DynamoDBクライアントを初期化
+                dynamodb_client = DynamoDBClient()
+
+                # DynamoDBに台本を保存
+                script_id = dynamodb_client.save_script(
+                    session_id=session_id,
+                    chapter_index=chapter_index,
+                    script_data=script_data
+                )
+
+                logger.info(f"台本をDynamoDBに保存しました: session_id={session_id}, script_id={script_id}")
+            except Exception as db_error:
+                # DynamoDBへの保存に失敗した場合はログに記録するが、処理は継続する
+                logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
+
             logger.info(f"台本を改善版で更新しました。chapter_index: {chapter_index}")
-            
+
             return {
                 "success": True,
                 "chapter_index": chapter_index,

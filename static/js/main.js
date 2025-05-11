@@ -1,4 +1,18 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // グローバルイベントリスナーを追加して章の切り替えに関連するクリーンアップを強化
+    document.addEventListener('click', function(e) {
+        // クリック要素がチャプターアイテム（または子要素）の場合
+        if (e.target.closest('.chapter-item')) {
+            console.log('チャプターアイテムクリック検出: フィードバック表示をリセットします');
+
+            // フィードバック関連要素を即座にリセット
+            const feedbackList = document.getElementById('feedback-list');
+            const historyHeader = document.getElementById('history-header');
+
+            if (feedbackList) feedbackList.innerHTML = '';
+            if (historyHeader) historyHeader.style.display = 'none';
+        }
+    });
     // トースト通知機能の追加
     function showToast(message, type = 'info') {
         // トーストコンテナの作成（なければ）
@@ -60,6 +74,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const chapterSummary = document.getElementById('chapter-summary');
     const scriptTextarea = document.getElementById('script-textarea');
     const feedbackContainer = document.getElementById('feedback-container');
+    const feedbackHeader = document.getElementById('feedback-header');
+    const historyHeader = document.getElementById('history-header');
     const feedbackList = document.getElementById('feedback-list');
     const feedbackTextarea = document.getElementById('feedback-textarea');
     const analysisResult = document.getElementById('analysis-result');
@@ -67,6 +83,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const approveScriptButton = document.getElementById('approve-script-button');
     const rejectScriptButton = document.getElementById('reject-script-button');
     const applyImprovementButton = document.getElementById('apply-improvement-button');
+
+    // 章ごとのフィードバックデータ管理用オブジェクト
 
     // 選択された動画ファイル
     let selectedFile = null;
@@ -370,17 +388,39 @@ document.addEventListener('DOMContentLoaded', () => {
     function setupScriptEditor() {
         // 台本編集セクションを表示
         scriptEditorSection.style.display = 'block';
-        
+
         // チャプターリストを生成
         renderChapterList();
-        
+
+        // フィードバック関連のリセット - 初期状態で確実にクリアしておく
+        const feedbackHeader = document.getElementById('feedback-header');
+        const historyHeader = document.getElementById('history-header');
+        const feedbackList = document.getElementById('feedback-list');
+        const feedbackContainer = document.getElementById('feedback-container');
+
+        if (feedbackHeader) feedbackHeader.textContent = 'フィードバック';
+        if (historyHeader) historyHeader.style.display = 'none';
+        if (feedbackList) feedbackList.innerHTML = '';
+        if (feedbackContainer) feedbackContainer.setAttribute('data-chapter', '-1');
+
         // 最初のチャプターを選択
         if (chapters.length > 0) {
             selectChapter(0);
         }
-        
+
         // 解析結果セクションを隠す（任意）
         // resultsSection.classList.add('hidden');
+    }
+
+    // DynamoDBからデータを取得して台本とフィードバックを同期する関数
+    function syncScriptWithDynamoDB(chapterIndex) {
+        // この関数は将来的にDynamoDBから直接データを取得するAPIを呼び出すことを想定
+        // 現在は未実装ですが、この関数をグローバルに利用可能にします
+        // 実装の際は以下のような処理を想定:
+        // 1. セッションIDとチャプターインデックスを使用してデータを取得
+        // 2. 返却された台本データとフィードバック履歴で現在のscripts配列を更新
+        // 3. UIを最新の状態で更新
+        console.log(`将来実装: 章${chapterIndex + 1}のデータをDynamoDBと同期`);
     }
     
     // チャプターリストを描画
@@ -414,29 +454,64 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // チャプター選択処理
     function selectChapter(index) {
+        console.log(`チャプター切替: ${currentChapterIndex} -> ${index}`);
+
         // 現在選択中のチャプターのハイライトを解除
         const currentSelected = chapterList.querySelector('.active');
         if (currentSelected) {
             currentSelected.classList.remove('active');
         }
-        
+
         // 新しいチャプターをハイライト
         const newSelected = chapterList.querySelector(`[data-index="${index}"]`);
         if (newSelected) {
             newSelected.classList.add('active');
         }
-        
+
         // 現在のチャプターインデックスを更新
         currentChapterIndex = index;
         const chapter = chapters[index];
-        
+
         // チャプタータイトルとサマリーを表示
         chapterTitle.textContent = `${chapter.chapter_num}. ${chapter.chapter_title}`;
         chapterSummary.textContent = chapter.chapter_summary;
-        
+
+        // 【重要】フィードバック関連を即座にクリア（チャプター切替での表示問題対策）
+        const feedbackHeader = document.getElementById('feedback-header');
+        const feedbackList = document.getElementById('feedback-list');
+        const historyHeader = document.getElementById('history-header');
+
+        // 表示をリセット - この時点でDOM要素を完全にクリア
+        console.log(`章切替時のフィードバッククリア: 次の章=${index + 1}`);
+
+        // 確実にフィードバックヘッダーを更新
+        feedbackHeader.textContent = `フィードバック - 章${index + 1}`;
+
+        // フィードバックリストを強制的に空に
+        feedbackList.innerHTML = '';
+
+        // 修正履歴ヘッダーも必ず非表示に
+        historyHeader.style.display = 'none';
+        historyHeader.setAttribute('data-chapter', index);
+
+        // フィードバックコンテナ自体にも章番号を紐付け
+        const feedbackContainer = document.getElementById('feedback-container');
+        if (feedbackContainer) {
+            feedbackContainer.setAttribute('data-chapter', index);
+        }
+
+        // フィードバック入力欄をクリア
+        feedbackTextarea.value = '';
+
+        // 将来的な同期処理のためのコード（現在は実装されていないがプレースホルダーとして用意）
+        // DynamoDBとの同期を行うとフィードバック履歴が最新の状態で取得できる
+        // syncScriptWithDynamoDB(index); // 将来的な実装に備えたプレースホルダー
+
         // スクリプトデータがあれば表示、なければ生成
+        // displayScriptでさらにフィードバックをクリアして正確に再表示する
         const script = scripts[index];
         if (script) {
+            // このスクリプトデータが未承認の場合でもDynamoDBから最新の状態を取得できる（将来実装）
             displayScript(script);
         } else {
             generateScript(index);
@@ -451,7 +526,7 @@ document.addEventListener('DOMContentLoaded', () => {
             durationInput.value = script.duration_minutes;
             console.log(`動画時間を更新: ${script.duration_minutes}分`);
         }
-        
+
         // 改善された台本がある場合は、台本欄に表示し、適用ボタンも表示
         if (script.improved_script) {
             // 元の台本を保存
@@ -468,30 +543,94 @@ document.addEventListener('DOMContentLoaded', () => {
             scriptTextarea.value = script.script_content;
             // ステータス表示
             updateScriptStatus(script.status);
+            // 改善適用ボタンを非表示に
+            applyImprovementButton.classList.add('hidden');
+            applyImprovementButton.classList.remove('highlight');
         }
-        
-        // フィードバックリストをクリア
+
+        // フィードバック関連の表示処理
+        console.log(`displayScript呼び出し: 章${currentChapterIndex}, フィードバック数=${script.feedback ? script.feedback.length : 0}`);
+
+        // 【重要】DOM要素を毎回直接取得して確実に参照（キャッシュを使わない）
+        const feedbackHeader = document.getElementById('feedback-header');
+        const historyHeader = document.getElementById('history-header');
+        const feedbackList = document.getElementById('feedback-list');
+        const feedbackContainer = document.getElementById('feedback-container');
+
+        // 必ず最初に全てクリア（どんな状態でも最初に必ず空にする）
+        console.log(`displayScript内でのフィードバッククリア実行: 章${currentChapterIndex + 1}`);
+        feedbackHeader.textContent = '';
+        historyHeader.style.display = 'none';
         feedbackList.innerHTML = '';
-        
-        // 過去のフィードバック履歴を表示
-        if (script.feedback && script.feedback.length > 0) {
-            // 過去のフィードバック履歴がある場合
-            script.feedback.forEach(feedback => {
+
+        // フィードバックコンテナ全体に章番号を紐付け（デバッグ用、表示問題の追跡に使用）
+        if (feedbackContainer) {
+            feedbackContainer.setAttribute('data-chapter', currentChapterIndex);
+        }
+
+        // フィードバックヘッダー更新（確実に現在の章番号を反映）
+        feedbackHeader.textContent = `フィードバック - 章${currentChapterIndex + 1}`;
+
+        // デバッグ: 章の表示状態を詳細に確認
+        console.log(`章${currentChapterIndex + 1}の表示: スクリプト状態=${script.status}, フィードバック数=${script.feedback ? script.feedback.length : 0}`);
+
+        // 過去のフィードバック履歴を表示すべきか判断
+        const hasFeedback = script.feedback && script.feedback.length > 0;
+        const needShowFeedback = script.status === 'approved' ||
+                               script.status === 'improved' ||
+                               script.status === 'completed' ||
+                               script.status === 'rejected';
+
+        // 履歴ヘッダーの表示/非表示（条件を満たす場合のみ表示）
+        if (hasFeedback && needShowFeedback) {
+            // 章番号を明示的にヘッダーに埋め込み
+            historyHeader.textContent = `章${currentChapterIndex + 1}の修正履歴`;
+            historyHeader.style.display = 'block';
+            // さらに章番号を属性として保存（デバッグ用）
+            historyHeader.setAttribute('data-chapter', currentChapterIndex);
+        } else {
+            historyHeader.style.display = 'none';
+        }
+
+        // 現在の章のフィードバック履歴のみを表示する
+        if (hasFeedback && needShowFeedback) {
+            // 新しい順に表示
+            console.log(`章${currentChapterIndex + 1}のフィードバック表示: ${script.feedback.length}件`);
+            const reversedFeedback = [...script.feedback].reverse();
+
+            // 章情報をデータ属性として各フィードバック要素に埋め込む
+            reversedFeedback.forEach((feedback, index) => {
                 const feedbackItem = document.createElement('div');
                 feedbackItem.className = 'script-feedback';
-                feedbackItem.textContent = feedback;
+                feedbackItem.setAttribute('data-chapter', currentChapterIndex);
+
+                // 履歴番号（章番号を含める）
+                const feedbackNumber = document.createElement('div');
+                feedbackNumber.className = 'feedback-number';
+                feedbackNumber.textContent = `#${reversedFeedback.length - index} (章${currentChapterIndex + 1})`;
+                feedbackItem.appendChild(feedbackNumber);
+
+                // フィードバック内容
+                const feedbackContent = document.createElement('div');
+                feedbackContent.className = 'feedback-content';
+                feedbackContent.textContent = feedback;
+                feedbackItem.appendChild(feedbackContent);
+
                 feedbackList.appendChild(feedbackItem);
             });
-        } else {
-            // フィードバック履歴がない場合
-            feedbackList.innerHTML = '<p>まだフィードバックはありません</p>';
+        } else if (needShowFeedback) {
+            // 履歴がない場合のメッセージ（章番号を含める）
+            const noFeedback = document.createElement('p');
+            noFeedback.textContent = `章${currentChapterIndex + 1}の修正履歴はありません`;
+            noFeedback.className = 'no-feedback-message';
+            noFeedback.setAttribute('data-chapter', currentChapterIndex);
+            feedbackList.appendChild(noFeedback);
         }
-        
-        // フィードバック入力欄をクリア
+
+        // フィードバック入力欄はクリアして表示
         feedbackTextarea.value = '';
-        
-        // Note: 改善された台本の表示処理は関数の先頭に移動済み
-        
+        feedbackTextarea.style.display = 'block';
+
         // 分析結果の表示
         if (script.analysis) {
             analysisResult.textContent = script.analysis;
@@ -499,9 +638,6 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             analysisResult.classList.add('hidden');
         }
-        
-        // 改善適用ボタンの表示/非表示は上部で処理済み
-        // （改善された台本がある場合は表示する処理は上部で実装済み）
     }
     
     // スクリプトステータスを更新
@@ -742,14 +878,39 @@ document.addEventListener('DOMContentLoaded', () => {
     // 台本承認ボタン
     approveScriptButton.addEventListener('click', () => {
         if (currentChapterIndex < 0) return;
-        
+
+        // 現在の台本内容を取得（エディタからの最新内容）
+        const currentContent = scriptTextarea.value;
+
+        // 現在表示されている内容をscript_contentに保存（最新の変更を反映）
+        scripts[currentChapterIndex].script_content = currentContent;
+
         // フィードバックを取得（空でも可）
         const feedbackText = feedbackTextarea.value || '承認しました。';
-        
+
+        // アニメーション用のクラスを作成
+        const loadingAnimation = document.createElement('div');
+        loadingAnimation.className = 'script-loading-animation';
+        loadingAnimation.innerHTML = `
+            <div class="loading-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            <p>台本を承認中...</p>
+        `;
+
+        // テキストエリアのコンテナを取得
+        const scriptContainer = scriptTextarea.parentElement;
+
+        // テキストエリアを非表示にして、アニメーションを表示
+        scriptTextarea.style.display = 'none';
+        scriptContainer.appendChild(loadingAnimation);
+
         // 動画時間を取得（分単位）
         const durationInput = document.getElementById('duration-input');
         const durationMinutes = parseInt(durationInput.value) || 3;
-        
+
         fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
             headers: {
@@ -764,35 +925,75 @@ document.addEventListener('DOMContentLoaded', () => {
         })
         .then(response => response.json())
         .then(data => {
+            // アニメーションを削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+
+            // テキストエリアを再び表示
+            scriptTextarea.style.display = '';
+
             if (data.success) {
                 // スクリプトの状態を更新
                 scripts[currentChapterIndex].status = 'approved';
-                
+
                 // UI更新
                 updateScriptStatus('approved');
                 renderChapterList();
-                
-                // 次のチャプターがあれば選択
+
+                // 改善適用ボタンを非表示に
+                applyImprovementButton.classList.add('hidden');
+                applyImprovementButton.classList.remove('highlight');
+
+                // 承認メッセージを表示
+                showToast('台本が承認されました！ DynamoDBに保存されました。', 'success');
+
+                // フィードバックリストを更新（最新の内容を表示）
+                if (!scripts[currentChapterIndex].feedback) {
+                    scripts[currentChapterIndex].feedback = [];
+                }
+                if (feedbackText && feedbackText !== '承認しました。') {
+                    scripts[currentChapterIndex].feedback.push(feedbackText);
+                }
+
+                // フィードバック入力欄をクリア
+                feedbackTextarea.value = '';
+
+                // 注意: 次のチャプターへの自動選択を無効化
+                // 承認後に次の章が自動選択されると、再度台本生成APIが呼ばれてしまうため
+                /*
                 if (currentChapterIndex + 1 < chapters.length) {
                     selectChapter(currentChapterIndex + 1);
                 }
+                */
             } else {
-                alert('承認に失敗しました: ' + data.error);
+                showToast('承認に失敗しました: ' + data.error, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('承認処理中にエラーが発生しました。');
+
+            // アニメーションを削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+
+            // テキストエリアを再び表示
+            scriptTextarea.style.display = '';
+
+            showToast('承認処理中にエラーが発生しました。', 'error');
         });
     });
     
     // 修正依頼ボタン
     rejectScriptButton.addEventListener('click', () => {
         if (currentChapterIndex < 0) return;
-        
+
         // フォーカスを当てる
         feedbackTextarea.focus();
-        
+
         // 既にフィードバックが入力されているか確認
         const feedbackText = feedbackTextarea.value;
         if (!feedbackText) {
@@ -800,7 +1001,7 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('フィードバックを入力してから再度「修正依頼」ボタンをクリックしてください。');
             return;
         }
-        
+
         // アニメーション用のクラスを作成
         const loadingAnimation = document.createElement('div');
         loadingAnimation.className = 'script-loading-animation';
@@ -812,24 +1013,27 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <p>台本を改善中...</p>
         `;
-        
-        // 現在の台本内容を保存
-        const originalContent = scriptTextarea.value;
-        
+
+        // 現在の台本内容を取得（エディタからの最新内容）
+        const currentContent = scriptTextarea.value;
+
+        // 現在表示されている内容をscript_contentに保存（最新の変更を反映）
+        scripts[currentChapterIndex].script_content = currentContent;
+
         // テキストエリアのコンテナを取得
         const scriptContainer = scriptTextarea.parentElement;
-        
+
         // テキストエリアを非表示にして、アニメーションを表示
         scriptTextarea.style.display = 'none';
         scriptContainer.appendChild(loadingAnimation);
-        
+
         // ステータスを更新
         updateScriptStatus('rejected');
-        
+
         // 動画時間を取得（分単位）
         const durationInput = document.getElementById('duration-input');
         const durationMinutes = parseInt(durationInput.value) || 3;
-        
+
         fetch('/api/bedrock-scripts/submit-feedback', {
             method: 'POST',
             headers: {
@@ -850,73 +1054,70 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (loadingAnimation) {
                     loadingAnimation.remove();
                 }
-                
+
                 // テキストエリアを再び表示
                 scriptTextarea.style.display = '';
-                
+
                 // スクリプトの状態を更新
                 scripts[currentChapterIndex].status = 'improved';
-                
+
                 // フィードバックリストに追加
                 if (!scripts[currentChapterIndex].feedback) {
                     scripts[currentChapterIndex].feedback = [];
                 }
                 scripts[currentChapterIndex].feedback.push(feedbackText);
-                
+
                 // 改善された台本があれば保存して表示
                 if (data.improved_script) {
                     // 元の台本を保存
                     scripts[currentChapterIndex]._original_content = scripts[currentChapterIndex].script_content;
                     // 改善された台本を保存
                     scripts[currentChapterIndex].improved_script = data.improved_script;
-                    
+
                     // 成功メッセージの表示
-                    alert('フィードバックを受け付けました。改善された台本を表示します。');
-                    
+                    showToast('フィードバックを受け付けました。改善された台本を表示します。', 'success');
+
                     // 改善適用ボタンを表示して目立たせる
                     applyImprovementButton.classList.remove('hidden');
                     applyImprovementButton.classList.add('highlight');
-                    
-                    // 台本を更新
+
+                    // 台本を更新（フィードバックリストも更新される）
                     displayScript(scripts[currentChapterIndex]);
                 } else {
-                    alert('フィードバックを受け付けましたが、台本の改善に失敗しました。');
+                    showToast('フィードバックを受け付けましたが、台本の改善に失敗しました。', 'error');
                     // 失敗の場合は元の状態に戻す
                     updateScriptStatus('rejected');
                     scriptTextarea.value = scripts[currentChapterIndex].script_content;
                 }
-                
+
                 // UI更新
                 renderChapterList();
-                
-                // フィードバック入力欄をクリア
-                feedbackTextarea.value = '';
             } else {
                 // アニメーションを削除
                 const loadingAnimation = document.querySelector('.script-loading-animation');
                 if (loadingAnimation) {
                     loadingAnimation.remove();
                 }
-                
+
                 // テキストエリアを再び表示
                 scriptTextarea.style.display = '';
                 scriptTextarea.value = scripts[currentChapterIndex].script_content;
-                alert('修正依頼に失敗しました: ' + data.error);
+                showToast('修正依頼に失敗しました: ' + data.error, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            
+
             // アニメーションを削除
             const loadingAnimation = document.querySelector('.script-loading-animation');
             if (loadingAnimation) {
                 loadingAnimation.remove();
             }
-            
+
             // テキストエリアを再び表示
             scriptTextarea.style.display = '';
             scriptTextarea.value = scripts[currentChapterIndex].script_content;
-            alert('修正依頼処理中にエラーが発生しました。');
+            showToast('修正依頼処理中にエラーが発生しました。', 'error');
         });
     });
     
@@ -986,26 +1187,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 applyImprovementButton.classList.add('hidden');
                 
                 // 成功メッセージ
-                alert('改善された台本を適用しました。内容を確認してください。');
+                showToast('改善された台本を適用しました。DynamoDBに保存されました。', 'success');
             } else {
-                alert('改善の適用に失敗しました: ' + data.error);
+                showToast('改善の適用に失敗しました: ' + data.error, 'error');
                 // 失敗した場合は元に戻す
                 scriptTextarea.value = scripts[currentChapterIndex].improved_script || scripts[currentChapterIndex].script_content;
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            
+
             // アニメーションを削除
             const loadingAnimation = document.querySelector('.script-loading-animation');
             if (loadingAnimation) {
                 loadingAnimation.remove();
             }
-            
+
             // テキストエリアを再び表示
             scriptTextarea.style.display = '';
             scriptTextarea.value = scripts[currentChapterIndex].improved_script || scripts[currentChapterIndex].script_content;
-            alert('改善適用処理中にエラーが発生しました。');
+            showToast('改善適用処理中にエラーが発生しました。', 'error');
         });
     });
     

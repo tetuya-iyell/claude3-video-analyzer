@@ -95,8 +95,9 @@
                         <div id="chapter-summary" class="script-feedback"></div>
                         <textarea id="script-textarea" class="script-textarea" placeholder="台本内容がここに表示されます..."></textarea>
                         
-                        <div id="feedback-container">
-                            <h4>フィードバック</h4>
+                        <div id="feedback-container" data-chapter="-1">
+                            <h4 id="feedback-header">フィードバック</h4>
+                            <h5 id="history-header" class="feedback-subheader" style="display:none !important;">修正履歴</h5>
                             <div id="feedback-list"></div>
                             <textarea id="feedback-textarea" class="feedback-area" placeholder="フィードバックを入力してください..."></textarea>
                         </div>
