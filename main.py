@@ -921,6 +921,13 @@ if __name__ == "__main__":
     print("Claude3 Video Analyzer Webサーバーを起動します...")
     print(f"使用モデル: {analyzer.model}")
     print(f"使用モード: {'Bedrock' if analyzer.use_bedrock else 'Anthropic Direct'}")
+
+    # AI Agentの設定を表示（デバッグ用）
+    if hasattr(analyzer, 'bedrock_agent_client') and analyzer.bedrock_agent_client is not None:
+        print(f"Bedrock AI Agent: 有効 (Agent ID: {analyzer.bedrock_agent_id}, Alias ID: {analyzer.bedrock_agent_alias_id})")
+    else:
+        print(f"Bedrock AI Agent: 無効")
+
     print("http://localhost:5000/ にアクセスしてください")
 
     app.run(debug=True, host="0.0.0.0", port=5000)
