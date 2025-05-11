@@ -1,4 +1,39 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // トースト通知機能の追加
+    function showToast(message, type = 'info') {
+        // トーストコンテナの作成（なければ）
+        let toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            toastContainer = document.createElement('div');
+            toastContainer.id = 'toast-container';
+            document.body.appendChild(toastContainer);
+        }
+
+        // トースト要素の作成
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+
+        // トーストをコンテナに追加
+        toastContainer.appendChild(toast);
+
+        // 表示アニメーション
+        setTimeout(() => {
+            toast.classList.add('show');
+        }, 10);
+
+        // 自動消去
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => {
+                toast.remove();
+            }, 300);
+        }, 3000);
+    }
+
+    // グローバルアクセスのためにウィンドウオブジェクトに関数を追加
+    window.showToast = showToast;
+
     // DOM要素の参照
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -135,7 +170,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('video', selectedFile);
         formData.append('analyze_type', currentAnalyzeType);
-        
+
         // 解析タイプに基づいてプロンプトを選択
         if (currentAnalyzeType === 'chapters') {
             formData.append('prompt', chaptersPromptTextarea.value);
@@ -143,14 +178,15 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             formData.append('prompt', normalPromptTextarea.value);
         }
-        
+
         // 解析セクションを表示
         resultsSection.classList.remove('hidden');
         resultsContent.innerHTML = '';
-        
-        // POSTリクエスト送信し、Server-Sent Events (SSE) で結果を受信
+
         // 解析タイプに基づいて異なるエンドポイントを使用
         const apiEndpoint = currentAnalyzeType === 'chapters' ? '/api/analyze/chapters' : '/api/analyze';
+
+        // Server-Sent Events (SSE) を使用して進行状況をリアルタイムで表示
         fetch(apiEndpoint, {
             method: 'POST',
             body: formData
@@ -158,69 +194,90 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) {
                 throw new Error(`HTTP error ${response.status}`);
             }
-            
+
+            // テキストストリームとして処理
             const reader = response.body.getReader();
-            const decoder = new TextDecoder();
+            const decoder = new TextDecoder("utf-8");
             let buffer = '';
-            
-            // ストリーミングレスポンスの処理
-            function readStream() {
+
+            function processStream() {
                 return reader.read().then(({ done, value }) => {
                     if (done) {
+                        console.log("Stream complete");
                         loading.classList.add('hidden');
                         analyzeButton.disabled = false;
+
+                        // 章立て解析完了時に台本生成ボタンを表示
+                        if (currentAnalyzeType === 'chapters') {
+                            generateScriptsButton.classList.remove('hidden');
+                            analysisText = resultsContent.innerText;
+                            console.log('章立て解析完了: 台本生成ボタンを表示');
+                        }
+
                         return;
                     }
-                    
+
+                    // デコードして現在のバッファに追加
                     buffer += decoder.decode(value, { stream: true });
-                    
-                    // Server-Sent Eventsの形式（data: {...}\n\n）でパース
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop() || '';
-                    
-                    for (const line of lines) {
-                        if (line.trim() === '') continue;
-                        
-                        try {
-                            const dataLine = line.replace(/^data: /, '');
-                            const data = JSON.parse(dataLine);
-                            
-                            if (data.text) {
-                                // テキストの追加（白空白とテキストを保持）
-                                const textNode = document.createTextNode(data.text);
-                                resultsContent.appendChild(textNode);
-                                
-                                // スクロール位置を最下部に調整
-                                resultsContent.scrollTop = resultsContent.scrollHeight;
-                            }
-                            
-                            if (data.error) {
-                                // エラー表示
-                                resultsContent.innerHTML += `<div class="error">Error: ${data.error}</div>`;
-                            }
-                            
-                            if (data.complete) {
-                                // 完了処理
-                                loading.classList.add('hidden');
-                                analyzeButton.disabled = false;
-                                
-                                // 章立て解析完了時に台本生成ボタンを表示
-                                if (currentAnalyzeType === 'chapters') {
-                                    generateScriptsButton.classList.remove('hidden');
-                                    analysisText = resultsContent.innerText;
-                                    console.log('章立て解析完了: 台本生成ボタンを表示');
+
+                    // イベントの処理 - 複数のイベントが含まれている可能性があるため、繰り返し処理
+                    // 各SSEイベントは "data: {...}\n\n" 形式
+                    let eventEndIndex;
+                    while ((eventEndIndex = buffer.indexOf('\n\n')) !== -1) {
+                        const eventData = buffer.substring(0, eventEndIndex);
+                        buffer = buffer.substring(eventEndIndex + 2); // '\n\n'の後ろを新しいバッファに
+
+                        // 'data: ' プレフィックスを取り除く
+                        if (eventData.startsWith('data: ')) {
+                            const jsonData = eventData.substring(6); // 'data: 'の長さ
+
+                            try {
+                                const data = JSON.parse(jsonData);
+                                console.log("受信したSSEデータ:", data);
+
+                                if (data.text) {
+                                    // テキストをリアルタイムで表示
+                                    resultsContent.textContent += data.text;
+                                    // スクロール位置を最下部に調整
+                                    resultsContent.scrollTop = resultsContent.scrollHeight;
                                 }
+
+                                if (data.error) {
+                                    // エラー表示
+                                    resultsContent.innerHTML += `<div class="error">Error: ${data.error}</div>`;
+                                    loading.classList.add('hidden');
+                                    analyzeButton.disabled = false;
+                                }
+
+                                if (data.complete) {
+                                    // 完了処理
+                                    loading.classList.add('hidden');
+                                    analyzeButton.disabled = false;
+
+                                    // 章立て解析完了時に台本生成ボタンを表示
+                                    if (currentAnalyzeType === 'chapters') {
+                                        generateScriptsButton.classList.remove('hidden');
+                                        analysisText = resultsContent.innerText;
+                                        console.log('章立て解析完了: 台本生成ボタンを表示');
+                                    }
+                                }
+                            } catch (error) {
+                                console.error("JSON parse error:", error, "Raw data:", jsonData);
                             }
-                        } catch (e) {
-                            console.error('SSEパースエラー:', e, line);
                         }
                     }
-                    
-                    return readStream();
+
+                    // 継続処理
+                    return processStream();
+                }).catch(error => {
+                    console.error("Stream error:", error);
+                    resultsContent.innerHTML += `<div class="error">Stream error: ${error.message}</div>`;
+                    loading.classList.add('hidden');
+                    analyzeButton.disabled = false;
                 });
             }
-            
-            return readStream();
+
+            return processStream();
         }).catch(error => {
             console.error('Error:', error);
             resultsContent.innerHTML += `<div class="error">Error: ${error.message}</div>`;
@@ -276,6 +333,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // 台本生成ボタン
     generateScriptsButton.addEventListener('click', () => {
+        // デバッグ用: リクエスト内容をコンソールに出力
+        console.log('解析テキスト:', analysisText);
+        console.log('解析テキスト長さ:', analysisText ? analysisText.length : 0);
+
         // 解析テキストから章構造を抽出するAPIを呼び出す
         fetch('/api/bedrock-scripts/analyze-chapters', {
             method: 'POST',
@@ -447,7 +508,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateScriptStatus(status) {
         chapterStatus.textContent = '';
         chapterStatus.className = '';
-        
+
         if (status === 'approved') {
             chapterStatus.textContent = '承認済み';
             chapterStatus.className = 'success-message';
@@ -462,54 +523,165 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (status === 'completed') {
             chapterStatus.textContent = '編集完了';
             chapterStatus.className = 'complete-message';
+        } else if (status === 'draft') {
+            chapterStatus.textContent = '下書き';
+        } else if (status === 'generating') {
+            chapterStatus.textContent = '生成中...';
         }
     }
     
     // 台本を生成する
     function generateScript(index) {
-        // ローディング表示
-        scriptTextarea.value = '台本を生成中...';
+        console.log('台本生成開始:', index);
+
+        // ステータス表示を「生成中」に更新
+        updateScriptStatus('generating');
+
+        // テキストエリアをローディング状態に
+        scriptTextarea.value = '台本を生成中...\n\nAIが台本を執筆しています。しばらくお待ちください...';
         scriptTextarea.disabled = true;
-        
+
+        // ローディングアニメーションの作成
+        const loadingAnimation = document.createElement('div');
+        loadingAnimation.className = 'script-loading-animation';
+        loadingAnimation.innerHTML = `
+            <div class="loading-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            <p>台本を生成中...</p>
+        `;
+
+        // スクリプトエリアに直接ローディングアニメーションを追加
+        const scriptContentContainer = document.querySelector('.script-content');
+        // 既存のローディングアニメーションを削除（念のため）
+        const existingAnimation = scriptContentContainer.querySelector('.script-loading-animation');
+        if (existingAnimation) {
+            existingAnimation.remove();
+        }
+
+        // テキストエリアの前にアニメーションを挿入
+        scriptContentContainer.insertBefore(loadingAnimation, scriptTextarea);
+
+        // テキストエリアを一時的に非表示
+        scriptTextarea.style.display = 'none';
+
         // 動画時間を取得（分単位）
         const durationInput = document.getElementById('duration-input');
         const durationMinutes = parseInt(durationInput.value) || 3;
-        
+
+        // 現在のチャプターをハイライト表示
+        const chapterItems = document.querySelectorAll('.chapter-item');
+        chapterItems.forEach((item) => {
+            if (parseInt(item.dataset.index) === index) {
+                item.classList.add('generating');
+            }
+        });
+
+        // デバッグ: リクエストの詳細をコンソールに表示
+        const requestBody = {
+            chapter_index: index,
+            chapters: chapters,
+            duration_minutes: durationMinutes
+        };
+        console.log('台本生成リクエスト:', requestBody);
+
         fetch('/api/bedrock-scripts/generate-script', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                chapter_index: index,
-                chapters: chapters,
-                duration_minutes: durationMinutes // 動画時間パラメータを追加
-            })
+            body: JSON.stringify(requestBody)
         })
-        .then(response => response.json())
+        .then(response => {
+            console.log('台本生成レスポンスステータス:', response.status);
+            return response.json();
+        })
         .then(data => {
+            // デバッグ: レスポンスの詳細をコンソールに表示
+            console.log('台本生成レスポンス:', data);
+
+            // ローディングアニメーション削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+
+            // テキストエリアを再表示
+            scriptTextarea.style.display = '';
+
+            // ハイライト表示を解除
+            const chapterItems = document.querySelectorAll('.chapter-item');
+            chapterItems.forEach((item) => {
+                if (parseInt(item.dataset.index) === index) {
+                    item.classList.remove('generating');
+                }
+            });
+
+            // エラーの場合は詳細なトレースバックを表示（デバッグ用）
+            if (data.error && data.traceback) {
+                console.error('Python Error:', data.error);
+                console.error('Traceback:', data.traceback);
+                scriptTextarea.value = `エラー: ${data.error}\n\nトレースバック:\n${data.traceback}`;
+                scriptTextarea.disabled = false;
+                updateScriptStatus('error');
+                return;
+            }
+
             if (data.success) {
                 // 生成された台本を保存
                 scripts[index] = data.script;
-                
+
                 // 表示を更新
                 scriptTextarea.value = data.script.script_content;
                 scriptTextarea.disabled = false;
-                
+
+                // 完了メッセージを表示
+                console.log('台本生成が完了しました');
+
+                // トースト通知を表示
+                showToast('台本が正常に生成されました！', 'success');
+
                 // ステータス表示
                 updateScriptStatus(data.script.status);
-                
+
                 // チャプターリストの表示を更新
                 renderChapterList();
             } else {
                 scriptTextarea.value = '台本の生成に失敗しました: ' + data.error;
                 scriptTextarea.disabled = false;
+                updateScriptStatus('error');
+
+                // エラー通知を表示
+                showToast('台本の生成に失敗しました: ' + data.error, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
+
+            // ローディングアニメーション削除
+            const loadingAnimation = document.querySelector('.script-loading-animation');
+            if (loadingAnimation) {
+                loadingAnimation.remove();
+            }
+
+            // テキストエリアを再表示
+            scriptTextarea.style.display = '';
             scriptTextarea.value = '台本の生成中にエラーが発生しました。';
             scriptTextarea.disabled = false;
+            updateScriptStatus('error');
+
+            // エラー通知を表示
+            showToast('台本の生成中にエラーが発生しました。', 'error');
+
+            // ハイライト表示を解除
+            const chapterItems = document.querySelectorAll('.chapter-item');
+            chapterItems.forEach((item) => {
+                if (parseInt(item.dataset.index) === index) {
+                    item.classList.remove('generating');
+                }
+            });
         });
     }
     
