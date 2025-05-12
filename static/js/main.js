@@ -1,4 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // セッション管理を初期化
+    window.SessionManager.initializeSession();
+    console.log('セッションID:', window.SessionManager.getSessionId());
     // グローバルイベントリスナーを追加して章の切り替えに関連するクリーンアップを強化
     document.addEventListener('click', function(e) {
         // クリック要素がチャプターアイテム（または子要素）の場合
@@ -412,15 +415,69 @@ document.addEventListener('DOMContentLoaded', () => {
         // resultsSection.classList.add('hidden');
     }
 
-    // DynamoDBからデータを取得して台本とフィードバックを同期する関数
-    function syncScriptWithDynamoDB(chapterIndex) {
-        // この関数は将来的にDynamoDBから直接データを取得するAPIを呼び出すことを想定
-        // 現在は未実装ですが、この関数をグローバルに利用可能にします
-        // 実装の際は以下のような処理を想定:
-        // 1. セッションIDとチャプターインデックスを使用してデータを取得
-        // 2. 返却された台本データとフィードバック履歴で現在のscripts配列を更新
-        // 3. UIを最新の状態で更新
-        console.log(`将来実装: 章${chapterIndex + 1}のデータをDynamoDBと同期`);
+    // DynamoDBからスクリプトの最新状態を取得して同期する
+    function syncScriptWithDynamoDB(index, callback) {
+        console.log(`DynamoDBとの同期を開始: 章${index + 1}`);
+
+        // SessionManagerからセッションIDを取得
+        const sessionId = window.SessionManager.getSessionId();
+
+        // セッションIDの取得状況をログに残す（デバッグ用）
+        console.log(`SessionManagerから取得したセッションID: ${sessionId}`);
+
+        if (!sessionId) {
+            console.log('セッションIDが存在しないため同期をスキップします');
+            if (callback) callback(null);
+            return;
+        }
+
+        // 非同期でAPIを呼び出す（メイン処理を妨げないようにする）
+        fetch('/api/bedrock-scripts/sync-with-dynamodb', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                chapter_index: index,
+                session_id: sessionId  // セッションIDを明示的にリクエストボディに含める
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                console.log(`DynamoDB同期成功: 章${index + 1}`);
+
+                // スクリプトデータが返却された場合は更新
+                if (data.script) {
+                    console.log(`章${index + 1}のスクリプトデータを更新します:`, data.script);
+
+                    // スクリプトデータを更新
+                    scripts[index] = data.script;
+
+                    // フィードバックの数を確認してログに出力（デバッグ用）
+                    const feedbackCount = data.script.feedback ? data.script.feedback.length : 0;
+                    console.log(`章${index + 1}のフィードバック数: ${feedbackCount}`);
+
+                    // フィードバック配列が存在するか確認して初期化（必要な場合）
+                    if (!data.script.feedback) {
+                        data.script.feedback = [];
+                        console.log(`章${index + 1}のフィードバック配列を初期化しました`);
+                    }
+
+                    // コールバック関数が指定されていれば実行
+                    if (callback) callback(data.script);
+                } else {
+                    if (callback) callback(null);
+                }
+            } else {
+                console.warn(`DynamoDB同期エラー: ${data.error || '不明なエラー'}`);
+                if (callback) callback(null);
+            }
+        })
+        .catch(error => {
+            console.error(`DynamoDB同期中の通信エラー:`, error);
+            if (callback) callback(null);
+        });
     }
     
     // チャプターリストを描画
@@ -503,19 +560,43 @@ document.addEventListener('DOMContentLoaded', () => {
         // フィードバック入力欄をクリア
         feedbackTextarea.value = '';
 
-        // 将来的な同期処理のためのコード（現在は実装されていないがプレースホルダーとして用意）
-        // DynamoDBとの同期を行うとフィードバック履歴が最新の状態で取得できる
-        // syncScriptWithDynamoDB(index); // 将来的な実装に備えたプレースホルダー
+        // 【重要】常にDynamoDBとの同期を試みる - 特に完了した章の場合
+        console.log(`章${index + 1}のデータをDynamoDBと同期します（修正履歴取得のため）`);
 
-        // スクリプトデータがあれば表示、なければ生成
-        // displayScriptでさらにフィードバックをクリアして正確に再表示する
-        const script = scripts[index];
-        if (script) {
-            // このスクリプトデータが未承認の場合でもDynamoDBから最新の状態を取得できる（将来実装）
-            displayScript(script);
-        } else {
-            generateScript(index);
-        }
+        // DynamoDBからフィードバック履歴を取得して最新状態にする
+        // 同期が完了した後の処理をコールバックで渡す
+        syncScriptWithDynamoDB(index, function(updatedScript) {
+            // 同期が成功して更新されたスクリプトがある場合
+            if (updatedScript) {
+                // スクリプトを更新して表示
+                scripts[index] = updatedScript;
+
+                // フィードバックが存在しない場合、空配列を初期化
+                if (!updatedScript.feedback) {
+                    updatedScript.feedback = [];
+                    console.log(`章${index + 1}のフィードバック配列を初期化しました（DynamoDBから更新後）`);
+                } else {
+                    console.log(`章${index + 1}のフィードバック数: ${updatedScript.feedback.length}（DynamoDBから更新後）`);
+                }
+
+                // スクリプトを表示（フィードバック履歴も表示される）
+                displayScript(updatedScript);
+            } else {
+                // 同期できなかった場合は既存のスクリプトを表示するか生成
+                const script = scripts[index];
+                if (script) {
+                    // フィードバックが存在しない場合、空配列を初期化
+                    if (!script.feedback) {
+                        script.feedback = [];
+                        console.log(`章${index + 1}のフィードバック配列を初期化しました（ローカルスクリプト）`);
+                    }
+
+                    displayScript(script);
+                } else {
+                    generateScript(index);
+                }
+            }
+        });
     }
     
     // スクリプトデータを表示
@@ -574,28 +655,44 @@ document.addEventListener('DOMContentLoaded', () => {
         // デバッグ: 章の表示状態を詳細に確認
         console.log(`章${currentChapterIndex + 1}の表示: スクリプト状態=${script.status}, フィードバック数=${script.feedback ? script.feedback.length : 0}`);
 
-        // 過去のフィードバック履歴を表示すべきか判断
+        // 過去のフィードバック履歴を表示すべきか判断 - すべての状態で表示するよう条件を緩和
         const hasFeedback = script.feedback && script.feedback.length > 0;
-        const needShowFeedback = script.status === 'approved' ||
-                               script.status === 'improved' ||
-                               script.status === 'completed' ||
-                               script.status === 'rejected';
 
-        // 履歴ヘッダーの表示/非表示（条件を満たす場合のみ表示）
-        if (hasFeedback && needShowFeedback) {
+        // 修正履歴ヘッダーの表示/非表示（フィードバックがある場合は常に表示）
+        if (hasFeedback) {
             // 章番号を明示的にヘッダーに埋め込み
             historyHeader.textContent = `章${currentChapterIndex + 1}の修正履歴`;
-            historyHeader.style.display = 'block';
+
+            // 強制的に表示するために徹底的な方法で表示設定
+            setTimeout(() => {
+                // 非同期で処理して確実に適用されるようにする
+                historyHeader.style.display = 'block';
+                historyHeader.style.visibility = 'visible';
+                historyHeader.style.removeProperty('display');
+                historyHeader.removeAttribute('style');
+                historyHeader.setAttribute('style', 'display: block !important; visibility: visible !important;');
+
+                // DOMに直接表示指定を適用
+                historyHeader.classList.remove('hidden');
+
+                console.log(`章${currentChapterIndex + 1}の修正履歴ヘッダーを強制表示しました`);
+            }, 100);
+
             // さらに章番号を属性として保存（デバッグ用）
             historyHeader.setAttribute('data-chapter', currentChapterIndex);
+            console.log(`章${currentChapterIndex + 1}の修正履歴ヘッダーを表示`);
         } else {
             historyHeader.style.display = 'none';
+            console.log(`章${currentChapterIndex + 1}にはフィードバックがないため修正履歴ヘッダーを非表示`);
         }
 
-        // 現在の章のフィードバック履歴のみを表示する
-        if (hasFeedback && needShowFeedback) {
-            // 新しい順に表示
+        // 現在の章のフィードバック履歴を表示する
+        if (hasFeedback) {
+            // 詳細なデバッグ情報を表示
             console.log(`章${currentChapterIndex + 1}のフィードバック表示: ${script.feedback.length}件`);
+            console.log(`フィードバック配列の内容:`, JSON.stringify(script.feedback));
+
+            // 新しい順に表示
             const reversedFeedback = [...script.feedback].reverse();
 
             // 章情報をデータ属性として各フィードバック要素に埋め込む
@@ -618,13 +715,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 feedbackList.appendChild(feedbackItem);
             });
-        } else if (needShowFeedback) {
+        } else {
             // 履歴がない場合のメッセージ（章番号を含める）
             const noFeedback = document.createElement('p');
             noFeedback.textContent = `章${currentChapterIndex + 1}の修正履歴はありません`;
             noFeedback.className = 'no-feedback-message';
             noFeedback.setAttribute('data-chapter', currentChapterIndex);
             feedbackList.appendChild(noFeedback);
+            console.log(`章${currentChapterIndex + 1}に修正履歴がない旨を表示`);
         }
 
         // フィードバック入力欄はクリアして表示

@@ -907,6 +907,41 @@ def bedrock_get_all_scripts():
     })
 
 
+@app.route("/api/bedrock-scripts/sync-with-dynamodb", methods=["POST"])
+def bedrock_sync_with_dynamodb():
+    """DynamoDBとスクリプトを同期するAPI"""
+    from src.claude3_video_analyzer.api_controller import APIController
+
+    try:
+        # リクエスト内容をログに記録
+        data = request.json
+        logging.info(f"DynamoDB同期APIが呼び出されました: chapter_index={data.get('chapter_index', 'unknown')}")
+
+        # APIコントローラーを作成
+        api_controller = APIController(script_generator)
+
+        # コントローラーのsync_with_dynamodb関数を呼び出す
+        response, status_code = api_controller.sync_with_dynamodb()
+
+        # フィードバック数をログに記録
+        if 'script' in response and 'feedback' in response['script']:
+            feedback_count = len(response['script']['feedback']) if isinstance(response['script']['feedback'], list) else 0
+            logging.info(f"DynamoDB同期完了: フィードバック数={feedback_count}件")
+
+        # レスポンスとステータスコードを返す
+        return jsonify(response), status_code
+
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        logging.error(f"DynamoDB同期API処理中にエラーが発生しました: {str(e)}")
+        logging.error(f"トレースバック: {error_traceback}")
+        return jsonify({
+            "success": False,
+            "error": f"DynamoDB同期処理中にエラーが発生しました: {str(e)}"
+        }), 500
+
+
 # エラーハンドリング
 @app.errorhandler(500)
 def internal_server_error(error):
