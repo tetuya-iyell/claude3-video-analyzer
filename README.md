@@ -11,6 +11,7 @@ Claude3 Video Analyzerは、Anthropic社のClaude-3モデルのマルチモー�
 - ドラッグ＆ドロップによる簡単な動画選択
 - **章立て解析機能** で動画の内容を構造化された形式で出力（[詳細はこちら](docs/chapter-analysis-feature.md)）
 - **ゆっくり不動産台本生成機能** で章立て解析結果から台本を自動生成（[詳細はこちら](docs/goose-script-generator.md)）
+- **DynamoDB統合機能** で台本データをAWSクラウドと同期（[詳細はこちら](docs/dynamodb-integration.md)）
 
 ## 必要条件
 
@@ -41,6 +42,10 @@ pip install -r requirements.txt
   - AWS_REGION は必要に応じて変更（デフォルト: us-east-1）
   - MODEL_ID を使用したいモデルに設定（例: anthropic.claude-3-7-sonnet-20240229-v1:0）
   - IAMユーザーがBedrock APIへのアクセス権を持っていることを確認
+- DynamoDB統合機能を利用する場合は、以下の設定を行います:
+  - `DYNAMODB_ENABLED=true` に設定
+  - `DYNAMODB_SCRIPTS_TABLE` と `DYNAMODB_MERGED_SCRIPTS_TABLE` でテーブル名を指定（デフォルト値のままでも可）
+  - IAMユーザーがDynamoDBへのアクセス権を持っていることを確認
 
 ## 使用方法
 
