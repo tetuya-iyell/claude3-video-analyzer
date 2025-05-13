@@ -87,21 +87,21 @@ class CredentialManager:
         """
         特定のAWSサービスのクライアントを取得する。
         認証情報が無効な場合は自動的にリフレッシュを試みる。
-        
+
         Args:
             service_name: AWS サービス名 ('bedrock-runtime' など)
             config: botocore の設定オブジェクト
-            
+
         Returns:
             boto3クライアント
         """
         # 認証情報をチェック
         self.check_credentials()
-        
+
         if not self.session:
             logger.error("有効なAWSセッションがありません")
             raise RuntimeError("AWS認証情報の取得に失敗しました")
-        
+
         try:
             return self.session.client(service_name=service_name, config=config)
         except Exception as e:
@@ -112,6 +112,39 @@ class CredentialManager:
                     return self.session.client(service_name=service_name, config=config)
                 except Exception as retry_e:
                     logger.error(f"リフレッシュ後も{service_name}クライアント作成に失敗: {str(retry_e)}")
+                    raise
+            else:
+                raise
+
+    def get_resource(self, service_name, config=None):
+        """
+        特定のAWSサービスのリソースを取得する。
+        認証情報が無効な場合は自動的にリフレッシュを試みる。
+
+        Args:
+            service_name: AWS サービス名 ('dynamodb' など)
+            config: botocore の設定オブジェクト
+
+        Returns:
+            boto3リソース
+        """
+        # 認証情報をチェック
+        self.check_credentials()
+
+        if not self.session:
+            logger.error("有効なAWSセッションがありません")
+            raise RuntimeError("AWS認証情報の取得に失敗しました")
+
+        try:
+            return self.session.resource(service_name=service_name, config=config)
+        except Exception as e:
+            logger.error(f"{service_name}リソースの作成に失敗: {str(e)}")
+            # エラーが発生した場合、認証情報をリフレッシュして再試行
+            if self.refresh_credentials():
+                try:
+                    return self.session.resource(service_name=service_name, config=config)
+                except Exception as retry_e:
+                    logger.error(f"リフレッシュ後も{service_name}リソース作成に失敗: {str(retry_e)}")
                     raise
             else:
                 raise

@@ -30,6 +30,17 @@ class APIController:
             script_generator: ScriptGeneratorインスタンス
         """
         self.script_generator = script_generator
+        self.dynamodb_enabled = os.environ.get('DYNAMODB_ENABLED', 'false').lower() in ('true', 'yes', '1')
+        
+        # DynamoDBが有効の場合、クライアントを初期化
+        self.dynamodb_client = None
+        if self.dynamodb_enabled:
+            try:
+                self.dynamodb_client = DynamoDBClient()
+                logger.info("DynamoDBクライアントを初期化しました")
+            except Exception as e:
+                logger.error(f"DynamoDBクライアントの初期化に失敗しました: {str(e)}")
+                logger.warning("DynamoDBの機能は無効になります")
         
     def analyze_chapters(self) -> Tuple[Dict[str, Any], int]:
         """章立て解析結果から各章を抽出するAPIエンドポイント処理
@@ -174,6 +185,18 @@ class APIController:
             
             logger.info(f"台本をファイルに保存しました。chapter_index: {chapter_index}, スクリプト総数: {len(scripts)}")
             
+            # DynamoDBが有効で、クライアントが初期化されている場合は保存
+            if self.dynamodb_client:
+                try:
+                    script_id = self.dynamodb_client.save_script(
+                        session_id=session_id,
+                        chapter_index=chapter_index,
+                        script_data=script_data
+                    )
+                    logger.info(f"台本をDynamoDBに保存しました: script_id={script_id}")
+                except Exception as db_error:
+                    logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
+            
             return {
                 "success": True,
                 "script": script_data,
@@ -247,6 +270,18 @@ class APIController:
             with open(scripts_file, 'w', encoding='utf-8') as f:
                 json.dump(scripts, f, ensure_ascii=False)
             
+            # DynamoDBが有効で、クライアントが初期化されている場合は保存
+            if self.dynamodb_client:
+                try:
+                    script_id = self.dynamodb_client.save_script(
+                        session_id=session_id,
+                        chapter_index=chapter_index,
+                        script_data=script_data
+                    )
+                    logger.info(f"分析済み台本をDynamoDBに保存しました: script_id={script_id}")
+                except Exception as db_error:
+                    logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
+            
             return {
                 "success": True,
                 "passed": analysis_result['passed'],
@@ -313,14 +348,6 @@ class APIController:
             # 共通の処理：動画時間パラメータを保存
             script_data['duration_minutes'] = duration_minutes
 
-            # DynamoDBクライアントを初期化
-            dynamodb_client = None
-            try:
-                dynamodb_client = DynamoDBClient()
-            except Exception as db_init_error:
-                # DynamoDBクライアントの初期化に失敗した場合はログに記録するが、処理は継続する
-                logger.error(f"DynamoDBクライアント初期化エラー: {str(db_init_error)}")
-
             # フィードバックの処理
             if is_approved:
                 # 承認の場合
@@ -335,20 +362,6 @@ class APIController:
                 if feedback_text and feedback_text != "承認しました。":
                     script_data['feedback'].append(feedback_text)
                     logger.info(f"承認時のフィードバックを追加: chapter_index={chapter_index}")
-
-                # 承認時はDynamoDBに保存
-                if dynamodb_client:
-                    try:
-                        # DynamoDBに台本を保存（環境変数の認証情報を使用）
-                        script_id = dynamodb_client.save_script(
-                            session_id=session_id,
-                            chapter_index=chapter_index,
-                            script_data=script_data
-                        )
-                        logger.info(f"承認された台本をDynamoDBに保存しました: session_id={session_id}, script_id={script_id}")
-                    except Exception as db_error:
-                        # DynamoDBへの保存に失敗した場合はログに記録するが、処理は継続する
-                        logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
             else:
                 # フィードバックの場合
                 script_data['status'] = "rejected"
@@ -356,7 +369,7 @@ class APIController:
                     script_data['feedback'] = []
                 script_data['feedback'].append(feedback_text)
                 logger.info(f"フィードバックを追加: chapter_index={chapter_index}, フィードバック数={len(script_data['feedback'])}")
-
+                
                 # 詳細なログ:改善前の状態
                 logger.info(f"台本改善前の状態:")
                 logger.info(f"  chapter_index: {chapter_index}")
@@ -390,23 +403,20 @@ class APIController:
                     script_content = script_data['script_content'] + "\n\n（フィードバックによる改善に失敗しました。手動で編集してください）"
 
                 # 処理済みの台本をセット（最終サニタイズ処理を適用）
-                # sanitize_scriptはモジュールレベルの関数なので上部でインポート済み
                 sanitized_content = sanitize_script(script_content)
                 script_data['improved_script'] = sanitized_content
-
-                # 修正依頼時もDynamoDBに保存する（重要な改善点）
-                if dynamodb_client:
-                    try:
-                        # DynamoDBに台本を保存
-                        script_id = dynamodb_client.save_script(
-                            session_id=session_id,
-                            chapter_index=chapter_index,
-                            script_data=script_data
-                        )
-                        logger.info(f"修正依頼された台本をDynamoDBに保存しました: session_id={session_id}, script_id={script_id}")
-                    except Exception as db_error:
-                        # DynamoDBへの保存に失敗した場合はログに記録するが、処理は継続する
-                        logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
+            
+            # DynamoDBが有効で、クライアントが初期化されている場合は保存
+            if self.dynamodb_client:
+                try:
+                    script_id = self.dynamodb_client.save_script(
+                        session_id=session_id,
+                        chapter_index=chapter_index,
+                        script_data=script_data
+                    )
+                    logger.info(f"フィードバック済み台本をDynamoDBに保存しました: script_id={script_id}")
+                except Exception as db_error:
+                    logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
             
             # 変更を保存
             scripts[chapter_index] = script_data
@@ -522,37 +532,32 @@ class APIController:
             
             # 変更を保存
             scripts[chapter_index] = script_data
-
+            
             # 詳細なデバッグ情報を出力
             logger.info(f"台本を改善版で更新します - 詳細状態:")
             logger.info(f"  chapter_index: {chapter_index}")
             logger.info(f"  更新後status: {script_data['status']}")
             logger.info(f"  script_content文字数: {len(script_data['script_content'])}")
             logger.info(f"  'improved_script'キーの削除: 完了")
-
+            
             # ファイルに保存
             with open(scripts_file, 'w', encoding='utf-8') as f:
                 json.dump(scripts, f, ensure_ascii=False)
-
-            # DynamoDBに台本を保存
-            try:
-                # DynamoDBクライアントを初期化
-                dynamodb_client = DynamoDBClient()
-
-                # DynamoDBに台本を保存
-                script_id = dynamodb_client.save_script(
-                    session_id=session_id,
-                    chapter_index=chapter_index,
-                    script_data=script_data
-                )
-
-                logger.info(f"台本をDynamoDBに保存しました: session_id={session_id}, script_id={script_id}")
-            except Exception as db_error:
-                # DynamoDBへの保存に失敗した場合はログに記録するが、処理は継続する
-                logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
-
+                
+            # DynamoDBが有効で、クライアントが初期化されている場合は保存
+            if self.dynamodb_client:
+                try:
+                    script_id = self.dynamodb_client.save_script(
+                        session_id=session_id,
+                        chapter_index=chapter_index,
+                        script_data=script_data
+                    )
+                    logger.info(f"改善適用済み台本をDynamoDBに保存しました: script_id={script_id}")
+                except Exception as db_error:
+                    logger.error(f"DynamoDBへの保存に失敗しました: {str(db_error)}")
+            
             logger.info(f"台本を改善版で更新しました。chapter_index: {chapter_index}")
-
+            
             return {
                 "success": True,
                 "chapter_index": chapter_index,
@@ -585,6 +590,20 @@ class APIController:
         # スクリプトデータをファイルから取得
         scripts_file = session.get('scripts_file')
         if not scripts_file or not os.path.exists(scripts_file):
+            # DynamoDBから取得を試みる
+            if self.dynamodb_client:
+                try:
+                    scripts = self.dynamodb_client.get_scripts_by_session(session_id)
+                    if scripts:
+                        logger.info(f"DynamoDBから {len(scripts)} 件のスクリプトを取得しました")
+                        return {
+                            "success": True,
+                            "scripts": scripts
+                        }, 200
+                except Exception as db_error:
+                    logger.error(f"DynamoDBからの取得に失敗しました: {str(db_error)}")
+                    
+            # DynamoDBからも取得できない場合は空リストを返す
             return {
                 "success": True,
                 "scripts": []
@@ -600,3 +619,133 @@ class APIController:
             "success": True,
             "scripts": scripts
         }, 200
+    
+    def sync_with_dynamodb(self) -> Tuple[Dict[str, Any], int]:
+        """DynamoDBと同期するAPIエンドポイント処理
+        
+        Returns:
+            APIレスポンスと状態コード
+        """
+        logger.info("======== DynamoDB同期APIが呼び出されました ========")
+        
+        if not self.dynamodb_client:
+            return {"error": "DynamoDBが無効化されているか、初期化に失敗しています"}, 400
+        
+        data = request.json
+        if not data or 'chapter_index' not in data:
+            return {"error": "章のインデックスが指定されていません"}, 400
+            
+        chapter_index = int(data['chapter_index'])  # 明示的に整数型に変換
+        
+        # セッションIDの取得（複数の方法を試す）
+        session_id = None
+        
+        # 1. リクエストデータから直接セッションIDを取得（フロントエンドから明示的に送信された場合）
+        if 'session_id' in data:
+            session_id = data['session_id']
+            logger.info(f"リクエストボディからセッションIDを取得: {session_id}")
+            
+        # 2. もしくはFlaskセッションから取得
+        elif 'session_id' in session:
+            session_id = session['session_id']
+            logger.info(f"Flaskセッションからセッションを取得: {session_id}")
+            
+        # セッションIDが見つからない場合はエラーを返す
+        if not session_id:
+            return {"error": "セッションIDが見つかりません。リクエストボディかFlaskセッションに指定してください。"}, 404
+            
+        logger.info(f"DynamoDB同期リクエスト: session_id={session_id}, chapter_index={chapter_index}")
+        
+        try:
+            # DynamoDBから台本を取得
+            scripts = self.dynamodb_client.get_scripts_by_session(session_id)
+            
+            # DynamoDBから取得したスクリプト数を確認
+            logger.info(f"DynamoDBから取得したスクリプト数: {len(scripts)}件")
+            
+            # 指定された章のスクリプトを探す
+            target_script = None
+            for script in scripts:
+                if script.get('chapter_index') == chapter_index:
+                    target_script = script
+                    
+                    # フィードバックの数を確認してログに出力（デバッグ用）
+                    if 'feedback' in script and isinstance(script['feedback'], list):
+                        logger.info(f"DynamoDBから取得した章{chapter_index}のフィードバック数: {len(script['feedback'])}件")
+                    else:
+                        logger.info(f"DynamoDBから取得した章{chapter_index}にフィードバックは存在しません")
+                        # フィードバック配列を初期化しておく（安全対策）
+                        script['feedback'] = []
+                    break
+                    
+            # 見つからない場合
+            if not target_script:
+                logger.info(f"章{chapter_index}の台本データがDynamoDBに見つかりません")
+                return {
+                    "success": True,
+                    "message": f"章 {chapter_index} の台本がDynamoDBに見つかりませんでした"
+                }, 200
+            
+            # ローカルのスクリプトデータを読み込む
+            scripts_file = session.get('scripts_file')
+            local_scripts = []
+            local_script_exists = False
+            
+            if scripts_file and os.path.exists(scripts_file):
+                try:
+                    with open(scripts_file, 'r', encoding='utf-8') as f:
+                        local_scripts = json.load(f)
+                    local_script_exists = True
+                    logger.info(f"ローカルのスクリプトファイルを読み込みました: {len(local_scripts)}件")
+                except Exception as read_error:
+                    logger.error(f"ローカルスクリプトの読み込みに失敗しました: {str(read_error)}")
+                    local_scripts = []
+            else:
+                # スクリプトファイルがない場合は新規作成用のパスを設定
+                scripts_file = os.path.join(SESSION_DATA_DIR, f"{session_id}_scripts.json")
+                logger.info(f"ローカルのスクリプトファイルが存在しないため、新規作成します: {scripts_file}")
+                
+            # 配列を必要な大きさに拡張
+            while len(local_scripts) <= chapter_index:
+                local_scripts.append(None)
+                
+            # ローカルの台本データを事前に取得（統合のため）
+            local_script = local_scripts[chapter_index] if chapter_index < len(local_scripts) else None
+            
+            # フィードバックの統合処理（ローカルとDynamoDBのマージ）
+            if local_script and 'feedback' in local_script and isinstance(local_script['feedback'], list) and len(local_script['feedback']) > 0:
+                # ローカルにフィードバックがある場合
+                logger.info(f"ローカルの章{chapter_index}のフィードバック数: {len(local_script['feedback'])}件")
+                
+                if 'feedback' not in target_script:
+                    target_script['feedback'] = []
+                
+                # 重複を排除して統合
+                merged_feedback = list(set(local_script['feedback'] + target_script['feedback']))
+                target_script['feedback'] = merged_feedback
+                
+                logger.info(f"フィードバックを統合: ローカル={len(local_script['feedback'])}件 + DynamoDB={len(target_script['feedback'])}件 → 統合後={len(merged_feedback)}件")
+            
+            # DynamoDBのデータでローカルを更新
+            local_scripts[chapter_index] = target_script
+            
+            # ファイルに保存
+            with open(scripts_file, 'w', encoding='utf-8') as f:
+                json.dump(local_scripts, f, ensure_ascii=False)
+                
+            # セッションに参照を保存
+            session['scripts_file'] = scripts_file
+                
+            logger.info(f"DynamoDBから取得した台本データをローカルに保存しました: chapter_index={chapter_index}, フィードバック数={len(target_script.get('feedback', []))}件")
+            
+            return {
+                "success": True,
+                "script": target_script,
+                "chapter_index": chapter_index
+            }, 200
+        except Exception as e:
+            import traceback
+            error_traceback = traceback.format_exc()
+            logger.error(f"DynamoDB同期エラー: {str(e)}")
+            logger.error(f"トレースバック: {error_traceback}")
+            return {"error": f"DynamoDBとの同期に失敗しました: {str(e)}", "traceback": error_traceback}, 500

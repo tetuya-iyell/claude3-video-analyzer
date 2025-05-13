@@ -15,6 +15,7 @@ from flask import (
 )
 from flask_cors import CORS
 from src.claude3_video_analyzer import VideoAnalyzer, ScriptGenerator
+from src.claude3_video_analyzer.api_routes import create_bedrock_scripts_blueprint
 from goose_lib.api import goose_bp
 
 # ロギング設定
@@ -43,9 +44,6 @@ if not os.path.exists(SESSION_DATA_DIR):
 
 CORS(app)
 
-# Goose API Blueprintを登録
-app.register_blueprint(goose_bp)
-
 # アップロードされた動画を保存するディレクトリ
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "resources")
 if not os.path.exists(UPLOAD_FOLDER):
@@ -60,13 +58,32 @@ load_dotenv()  # 明示的に.envを読み込む
 try:
     analyzer = VideoAnalyzer()
     print(f"モード: {analyzer.mode}, Bedrock使用: {analyzer.use_bedrock}")
-    
+
     # ScriptGeneratorインスタンスの作成
     script_generator = ScriptGenerator(analyzer)
     print("台本生成エンジンの初期化が完了しました")
+
+    # DynamoDB設定のログ出力
+    dynamodb_enabled = os.environ.get('DYNAMODB_ENABLED', 'false').lower() in ('true', 'yes', '1')
+    if dynamodb_enabled:
+        print("DynamoDB統合が有効です")
+        scripts_table = os.environ.get('DYNAMODB_SCRIPTS_TABLE', 'YukkuriScripts')
+        merged_scripts_table = os.environ.get('DYNAMODB_MERGED_SCRIPTS_TABLE', 'YukkuriMergedScripts')
+        print(f"使用テーブル: Scripts={scripts_table}, MergedScripts={merged_scripts_table}")
+    else:
+        print("DynamoDB統合は無効です（使用するには DYNAMODB_ENABLED=true を設定）")
+
+    # Bedrockスクリプトジェネレーター用のBlueprintを作成して登録
+    bedrock_scripts_bp = create_bedrock_scripts_blueprint(script_generator)
+    app.register_blueprint(bedrock_scripts_bp)
+    print("Bedrock台本生成APIルートを登録しました")
 except Exception as e:
     print(f"初期化エラー: {str(e)}")
     raise
+
+# Goose API Blueprintを登録
+app.register_blueprint(goose_bp)
+print("Goose台本生成APIルートを登録しました")
 
 
 @app.route("/")
@@ -884,9 +901,9 @@ def bedrock_get_all_scripts():
             "success": True,
             "scripts": []
         })
-    
+
     session_id = session['session_id']
-    
+
     # スクリプトデータをファイルから取得
     scripts_file = session.get('scripts_file')
     if not scripts_file or not os.path.exists(scripts_file):
@@ -894,52 +911,21 @@ def bedrock_get_all_scripts():
             "success": True,
             "scripts": []
         })
-    
+
     # スクリプトデータを読み込む
     with open(scripts_file, 'r', encoding='utf-8') as f:
         scripts = json.load(f)
-    
+
     logging.info(f"全スクリプト取得: {len(scripts)}件")
-    
+
     return jsonify({
         "success": True,
         "scripts": scripts
     })
 
 
-@app.route("/api/bedrock-scripts/sync-with-dynamodb", methods=["POST"])
-def bedrock_sync_with_dynamodb():
-    """DynamoDBとスクリプトを同期するAPI"""
-    from src.claude3_video_analyzer.api_controller import APIController
-
-    try:
-        # リクエスト内容をログに記録
-        data = request.json
-        logging.info(f"DynamoDB同期APIが呼び出されました: chapter_index={data.get('chapter_index', 'unknown')}")
-
-        # APIコントローラーを作成
-        api_controller = APIController(script_generator)
-
-        # コントローラーのsync_with_dynamodb関数を呼び出す
-        response, status_code = api_controller.sync_with_dynamodb()
-
-        # フィードバック数をログに記録
-        if 'script' in response and 'feedback' in response['script']:
-            feedback_count = len(response['script']['feedback']) if isinstance(response['script']['feedback'], list) else 0
-            logging.info(f"DynamoDB同期完了: フィードバック数={feedback_count}件")
-
-        # レスポンスとステータスコードを返す
-        return jsonify(response), status_code
-
-    except Exception as e:
-        import traceback
-        error_traceback = traceback.format_exc()
-        logging.error(f"DynamoDB同期API処理中にエラーが発生しました: {str(e)}")
-        logging.error(f"トレースバック: {error_traceback}")
-        return jsonify({
-            "success": False,
-            "error": f"DynamoDB同期処理中にエラーが発生しました: {str(e)}"
-        }), 500
+# DynamoDB同期エンドポイントは api_routes.py の Blueprint で定義済みのため削除
+# API Blueprint経由で /api/bedrock-scripts/sync-with-dynamodb が既に実装されています
 
 
 # エラーハンドリング

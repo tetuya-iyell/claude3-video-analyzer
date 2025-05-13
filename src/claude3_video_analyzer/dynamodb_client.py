@@ -9,6 +9,7 @@ import uuid
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+from .aws_credentials import with_aws_credential_refresh
 
 # ロガー設定
 logger = logging.getLogger(__name__)
@@ -22,26 +23,144 @@ class DynamoDBClient:
         環境変数から設定を読み込み、DynamoDBクライアントを初期化します。
         """
         # 環境変数から設定を読み込む
-        self.enabled = os.getenv('DYNAMODB_ENABLED', 'false').lower() == 'true'
-        self.scripts_table_name = os.getenv('DYNAMODB_SCRIPTS_TABLE', 'YukkuriScripts')
-        self.merged_scripts_table_name = os.getenv('DYNAMODB_MERGED_SCRIPTS_TABLE', 'YukkuriMergedScripts')
-        self.region = os.getenv('DYNAMODB_REGION', os.getenv('AWS_REGION', 'us-east-1'))
+        self.enabled = os.environ.get('DYNAMODB_ENABLED', 'false').lower() in ('true', 'yes', '1')
+        self.scripts_table_name = os.environ.get('DYNAMODB_SCRIPTS_TABLE', 'YukkuriScripts')
+        self.merged_scripts_table_name = os.environ.get('DYNAMODB_MERGED_SCRIPTS_TABLE', 'YukkuriMergedScripts')
+        self.region = os.environ.get('AWS_REGION', 'us-east-1')
         
         # DynamoDBが有効でない場合は初期化を終了
         if not self.enabled:
             logger.info("DynamoDBは無効に設定されています。データは保存されません。")
             return
             
-        # DynamoDBクライアントを初期化
+        # 認証情報マネージャーを初期化して使用
+        from .aws_credentials import CredentialManager
+        self.credential_manager = CredentialManager(region_name=self.region)
+        
+        # DynamoDBリソースを初期化
         try:
-            self.dynamodb = boto3.resource('dynamodb', region_name=self.region)
+            # セッションから認証情報を取得してDynamoDBリソースを初期化
+            self.dynamodb = self.credential_manager.get_resource('dynamodb')
             self.scripts_table = self.dynamodb.Table(self.scripts_table_name)
             self.merged_scripts_table = self.dynamodb.Table(self.merged_scripts_table_name)
             logger.info(f"DynamoDBクライアントを初期化しました: リージョン={self.region}, スクリプトテーブル={self.scripts_table_name}")
+            
+            # テーブルが存在することを確認（必要に応じて作成）
+            self._ensure_tables_exist()
         except Exception as e:
             logger.error(f"DynamoDBクライアントの初期化に失敗しました: {str(e)}")
             raise
+            
+    def _ensure_tables_exist(self):
+        """必要なテーブルが存在することを確認し、なければ作成する"""
+        if not self.enabled:
+            return
+            
+        # スクリプトテーブルの確認
+        try:
+            self.scripts_table.table_status
+            logger.info(f"スクリプトテーブル {self.scripts_table_name} は存在します")
+        except Exception:
+            logger.info(f"スクリプトテーブル {self.scripts_table_name} を作成します")
+            self._create_scripts_table()
+            
+        # 結合スクリプトテーブルの確認
+        try:
+            self.merged_scripts_table.table_status
+            logger.info(f"結合スクリプトテーブル {self.merged_scripts_table_name} は存在します")
+        except Exception:
+            logger.info(f"結合スクリプトテーブル {self.merged_scripts_table_name} を作成します")
+            self._create_merged_scripts_table()
+            
+    def _create_scripts_table(self):
+        """スクリプトテーブルを作成する"""
+        if not self.enabled:
+            return
+            
+        # 認証情報を更新してテーブルを作成
+        try:
+            self.dynamodb.create_table(
+                TableName=self.scripts_table_name,
+                KeySchema=[
+                    {'AttributeName': 'script_id', 'KeyType': 'HASH'},
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'script_id', 'AttributeType': 'S'},
+                    {'AttributeName': 'session_id', 'AttributeType': 'S'},
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'session_id-index',
+                        'KeySchema': [
+                            {'AttributeName': 'session_id', 'KeyType': 'HASH'},
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 5,
+                            'WriteCapacityUnits': 5
+                        }
+                    },
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            logger.info(f"スクリプトテーブル {self.scripts_table_name} を作成しました")
+            
+            # テーブルが使用可能になるまで待機
+            self.scripts_table.meta.client.get_waiter('table_exists').wait(TableName=self.scripts_table_name)
+        except Exception as e:
+            logger.error(f"スクリプトテーブルの作成に失敗しました: {str(e)}")
+            raise
+            
+    def _create_merged_scripts_table(self):
+        """結合スクリプトテーブルを作成する"""
+        if not self.enabled:
+            return
+            
+        # 認証情報を更新してテーブルを作成
+        try:
+            self.dynamodb.create_table(
+                TableName=self.merged_scripts_table_name,
+                KeySchema=[
+                    {'AttributeName': 'merged_id', 'KeyType': 'HASH'},
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'merged_id', 'AttributeType': 'S'},
+                    {'AttributeName': 'session_id', 'AttributeType': 'S'},
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'session_id-index',
+                        'KeySchema': [
+                            {'AttributeName': 'session_id', 'KeyType': 'HASH'},
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 5,
+                            'WriteCapacityUnits': 5
+                        }
+                    },
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            logger.info(f"結合スクリプトテーブル {self.merged_scripts_table_name} を作成しました")
+            
+            # テーブルが使用可能になるまで待機
+            self.merged_scripts_table.meta.client.get_waiter('table_exists').wait(TableName=self.merged_scripts_table_name)
+        except Exception as e:
+            logger.error(f"結合スクリプトテーブルの作成に失敗しました: {str(e)}")
+            raise
     
+    @with_aws_credential_refresh
     def save_script(self, session_id: str, chapter_index: int, script_data: Dict[str, Any]) -> str:
         """台本をDynamoDBに保存する
 
@@ -64,13 +183,13 @@ class DynamoDBClient:
             # 既存のデータがあるか確認
             existing_item = None
             try:
-                # インデックスがない場合はスキャン操作を使用
-                logger.info(f"既存のスクリプトをスキャンで検索: session_id={session_id}, chapter_index={chapter_index}")
-                response = self.scripts_table.scan(
-                    FilterExpression=boto3.dynamodb.conditions.Attr('session_id').eq(session_id) & 
-                                      boto3.dynamodb.conditions.Attr('chapter_index').eq(chapter_index)
+                # インデックスがある場合はクエリを使用
+                response = self.scripts_table.query(
+                    IndexName='session_id-index',
+                    KeyConditionExpression=boto3.dynamodb.conditions.Key('session_id').eq(session_id),
+                    FilterExpression=boto3.dynamodb.conditions.Attr('chapter_index').eq(chapter_index)
                 )
-
+                
                 if 'Items' in response and len(response['Items']) > 0:
                     # 既存のアイテムが見つかった場合
                     existing_item = response['Items'][0]
@@ -100,7 +219,7 @@ class DynamoDBClient:
                 'duration_minutes': script_data.get('duration_minutes', 3)
             }
 
-            # フィードバック処理（重要な修正点）
+            # フィードバック処理
             # 新しいスクリプトデータにフィードバックが含まれているか確認
             has_new_feedback = 'feedback' in script_data and isinstance(script_data['feedback'], list)
             if has_new_feedback:
@@ -145,9 +264,6 @@ class DynamoDBClient:
                 item['feedback'] = []
                 logger.info("フィードバックはありません。空配列を設定")
 
-            # フィードバック数の確認（デバッグ用）
-            logger.info(f"保存するデータのフィードバック数: {len(item.get('feedback', []))}件")
-
             # 分析結果があれば保存
             if 'analysis' in script_data:
                 item['analysis'] = script_data['analysis']
@@ -167,6 +283,7 @@ class DynamoDBClient:
             logger.error(f"スクリプトの保存に失敗しました: {str(e)}")
             raise
     
+    @with_aws_credential_refresh
     def get_script_by_id(self, script_id: str) -> Optional[Dict[str, Any]]:
         """スクリプトIDを指定して台本を取得する
         
@@ -194,6 +311,7 @@ class DynamoDBClient:
             logger.error(f"スクリプトの取得に失敗しました: {str(e)}")
             raise
     
+    @with_aws_credential_refresh
     def get_scripts_by_session(self, session_id: str) -> List[Dict[str, Any]]:
         """セッションIDを指定して台本リストを取得する
 
@@ -208,10 +326,10 @@ class DynamoDBClient:
             return []
 
         try:
-            # インデックスがない場合はスキャン操作を使用
-            logger.info(f"セッションのスクリプトをスキャンで検索: session_id={session_id}")
-            response = self.scripts_table.scan(
-                FilterExpression=boto3.dynamodb.conditions.Attr('session_id').eq(session_id)
+            # セッションIDのインデックスを使用して検索
+            response = self.scripts_table.query(
+                IndexName='session_id-index',
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('session_id').eq(session_id)
             )
 
             # 結果を確認
@@ -228,6 +346,7 @@ class DynamoDBClient:
             logger.error(f"セッションのスクリプト取得に失敗しました: {str(e)}")
             raise
     
+    @with_aws_credential_refresh
     def get_merged_script(self, merged_id: str) -> Optional[Dict[str, Any]]:
         """結合されたスクリプトを取得する
         
@@ -255,6 +374,7 @@ class DynamoDBClient:
             logger.error(f"結合スクリプトの取得に失敗しました: {str(e)}")
             raise
     
+    @with_aws_credential_refresh
     def save_merged_script(self, session_id: str, merged_script_data: Dict[str, Any]) -> str:
         """結合された台本をDynamoDBに保存する
         
