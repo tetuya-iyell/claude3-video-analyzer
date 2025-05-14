@@ -533,6 +533,29 @@ document.addEventListener('DOMContentLoaded', () => {
         chapterTitle.textContent = `${chapter.chapter_num}. ${chapter.chapter_title}`;
         chapterSummary.textContent = chapter.chapter_summary;
 
+        // 章切替時の動画時間設定
+        // 既に処理済みの章の場合は保存されている動画時間を使用
+        // それ以外の場合は一時的にデフォルト値（3分）にする
+        const durationInput = document.getElementById('duration-input');
+        
+        // この章が既に生成済みかチェック
+        const existingScript = scripts[index];
+        if (existingScript && 
+            (existingScript.status === 'approved' || 
+             existingScript.status === 'completed' || 
+             existingScript.status === 'rejected' ||
+             existingScript.status === 'improved' ||
+             (existingScript.feedback && existingScript.feedback.length > 0))) {
+            // 既に保存されている値を使用
+            const savedDuration = parseInt(existingScript.duration_minutes) || 3;
+            durationInput.value = savedDuration;
+            console.log(`章切替時に既に存在する章${index + 1}の保存済み動画時間${savedDuration}分を使用`);
+        } else {
+            // 新しい章か未処理の章はデフォルト値に設定
+            durationInput.value = 3;
+            console.log('章の切り替え時に一時的に動画時間を3分に設定（新規章または未編集の章）');
+        }
+
         // 【重要】フィードバック関連を即座にクリア（チャプター切替での表示問題対策）
         const feedbackHeader = document.getElementById('feedback-header');
         const feedbackList = document.getElementById('feedback-list');
@@ -579,6 +602,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.log(`章${index + 1}のフィードバック数: ${updatedScript.feedback.length}（DynamoDBから更新後）`);
                 }
 
+                // 重要: DynamoDBから取得したデータには常に正しい動画時間が含まれている
+                // 修正履歴（フィードバック）がある場合は常に既存の動画時間を保持
+                if (updatedScript.feedback && updatedScript.feedback.length > 0) {
+                    // フィードバックが存在する場合は常に保存されている動画時間を使用
+                    let savedDuration = parseInt(updatedScript.duration_minutes) || 3;
+                    updatedScript.duration_minutes = savedDuration;
+                    console.log(`章${index + 1}の表示時にフィードバック履歴があるため、DynamoDBの動画時間${savedDuration}分を使用します`);
+                }
+                // ステータスでも動画時間を保持（フィードバックがない場合でもステータスで判断）
+                else if (updatedScript.status === 'approved' || updatedScript.status === 'completed' || 
+                    updatedScript.status === 'rejected' || updatedScript.status === 'improved') {
+                    // DynamoDBに保存されている動画時間を使用
+                    let savedDuration = parseInt(updatedScript.duration_minutes) || 3;
+                    updatedScript.duration_minutes = savedDuration;
+                    console.log(`章${index + 1}の表示時に保存済み動画時間${savedDuration}分を使用します（ステータス: ${updatedScript.status}）`);
+                } else {
+                    // 未編集の場合はデフォルト値を使用
+                    updatedScript.duration_minutes = 3;
+                    console.log(`章${index + 1}の表示時に動画時間を3分にリセットしました（新規章）`);
+                }
+
                 // スクリプトを表示（フィードバック履歴も表示される）
                 displayScript(updatedScript);
             } else {
@@ -589,6 +633,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!script.feedback) {
                         script.feedback = [];
                         console.log(`章${index + 1}のフィードバック配列を初期化しました（ローカルスクリプト）`);
+                    }
+                    
+                    // 重要: DynamoDBから取得したデータには常に正しい動画時間が含まれている
+                    // scriptデータが存在するかつ、修正履歴がある場合は動画時間を保持
+                    if (script.feedback && script.feedback.length > 0) {
+                        // フィードバックが存在する場合は常に保存されている動画時間を使用
+                        let savedDuration = parseInt(script.duration_minutes) || 3;
+                        script.duration_minutes = savedDuration;
+                        console.log(`章${index + 1}の表示時にフィードバック履歴があるため、保存済み動画時間${savedDuration}分を使用します`);
+                    }
+                    // ステータス条件でも動画時間を保持（フィードバックがない場合でもステータスで判断）
+                    else if (script.status === 'approved' || script.status === 'completed' || 
+                        script.status === 'rejected' || script.status === 'improved') {
+                        // 保存されている動画時間を使用
+                        let savedDuration = parseInt(script.duration_minutes) || 3;
+                        script.duration_minutes = savedDuration;
+                        console.log(`章${index + 1}のローカルスクリプト表示時に保存済み動画時間${savedDuration}分を使用します`);
+                    } else {
+                        // 未編集の章はデフォルトの3分を使用
+                        script.duration_minutes = 3;
+                        console.log(`章${index + 1}のローカルスクリプト表示時に動画時間を3分にリセットしました（新規章）`);
                     }
 
                     displayScript(script);
@@ -601,15 +666,42 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // スクリプトデータを表示
     function displayScript(script) {
+        // 入力時のスクリプトデータをログ出力（デバッグ用）
+        console.log('displayScript: 入力時のスクリプト:', JSON.stringify(script));
+        
         // 動画時間の設定を更新（保存されている値があれば）
         const durationInput = document.getElementById('duration-input');
-        if (script.duration_minutes) {
-            durationInput.value = script.duration_minutes;
-            console.log(`動画時間を更新: ${script.duration_minutes}分`);
+        // 入力前のステータスを記録
+        console.log('displayScript: 入力前のdurationInput値:', durationInput.value);
+        console.log('displayScript: スクリプトオブジェクトのキー:', Object.keys(script));
+        console.log('displayScript: script.duration_minutes =', script.duration_minutes, typeof script.duration_minutes);
+        
+        // displayScriptでは基本的に引数として渡されたスクリプトオブジェクトの動画時間値を優先する
+        // これにより、章切替時に事前に設定された3分の値が適切に反映される
+        let scriptDuration;
+        if (script.duration_minutes !== undefined && script.duration_minutes !== null) {
+            // 数値の場合はそのまま使用、文字列なら数値化、それ以外はデフォルト値
+            scriptDuration = (typeof script.duration_minutes === 'number') ? 
+                script.duration_minutes : 
+                (parseInt(script.duration_minutes) || 3);
+        } else {
+            // undefinedやnullの場合はデフォルト値
+            scriptDuration = 3;
+            console.log('動画時間値が不正なためデフォルト値を使用:' + script.duration_minutes);
         }
+        
+        // 入力欄とスクリプトデータの両方を更新
+        durationInput.value = scriptDuration;
+        script.duration_minutes = scriptDuration;
+        console.log(`動画時間を確定: ${scriptDuration}分 (UI入力値も更新済み)`);
 
         // 改善された台本がある場合は、台本欄に表示し、適用ボタンも表示
-        if (script.improved_script) {
+        // ただし、ステータスが'improved'または'rejected'（修正依頼された）の場合のみ表示する
+        // かつ、improved_scriptが実際に存在し、文字列であることを確認する
+        if (script.improved_script && 
+            typeof script.improved_script === 'string' && 
+            script.improved_script.length > 0 &&
+            (script.status === 'improved' || script.status === 'rejected')) {
             // 元の台本を保存
             script._original_content = script.script_content;
             // 改善された台本を表示
@@ -619,6 +711,9 @@ document.addEventListener('DOMContentLoaded', () => {
             applyImprovementButton.classList.add('highlight');
             // ステータス表示を更新（改善中に変更）
             updateScriptStatus('improved');
+            
+            // デバッグログ
+            console.log(`改善された台本を表示: ステータス=${script.status}, 改善適用ボタンを表示`);
         } else {
             // 通常の台本を表示
             scriptTextarea.value = script.script_content;
@@ -627,6 +722,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // 改善適用ボタンを非表示に
             applyImprovementButton.classList.add('hidden');
             applyImprovementButton.classList.remove('highlight');
+            
+            // デバッグログ
+            if (script.improved_script) {
+                console.log(`改善台本は存在するがステータスが対象外のため表示しない: ステータス=${script.status}`);
+            }
         }
 
         // フィードバック関連の表示処理
@@ -801,9 +901,20 @@ document.addEventListener('DOMContentLoaded', () => {
         // テキストエリアを一時的に非表示
         scriptTextarea.style.display = 'none';
 
-        // 動画時間を取得（分単位）
+        // 動画時間の設定
         const durationInput = document.getElementById('duration-input');
-        const durationMinutes = parseInt(durationInput.value) || 3;
+        let durationMinutes = 3; // デフォルト値
+        
+        // 既存の章のスクリプトがあり、承認済みか完了済みであれば、その動画時間を継続使用
+        if (scripts[index] && (scripts[index].status === 'approved' || scripts[index].status === 'completed' || scripts[index].status === 'rejected')) {
+            durationMinutes = parseInt(scripts[index].duration_minutes) || 3;
+            durationInput.value = durationMinutes;
+            console.log(`章${index + 1}の再生成時に保存済みの動画時間${durationMinutes}分を使用します`);
+        } else {
+            // 新規章や未編集の章はデフォルトの3分
+            durationInput.value = 3;
+            console.log(`章${index + 1}の新規生成時に動画時間を3分に設定しました`);
+        }
 
         // 現在のチャプターをハイライト表示
         const chapterItems = document.querySelectorAll('.chapter-item');
@@ -866,6 +977,19 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.success) {
                 // 生成された台本を保存
                 scripts[index] = data.script;
+                
+                // 重要: 新規生成直後は台本改善フラグをリセット
+                // 誤って改善済み状態になるのを防ぐため
+                if (scripts[index].improved_script) {
+                    console.log('警告: 新規生成台本に improved_script が含まれています。削除します。');
+                    delete scripts[index].improved_script;
+                }
+                
+                // ステータスの確認と修正（初期台本はdraftまたはreviewであるべき）
+                if (scripts[index].status === 'improved' || scripts[index].status === 'rejected') {
+                    console.log(`警告: 新規生成台本のステータスが不正です: ${scripts[index].status}。'draft'に修正します。`);
+                    scripts[index].status = 'draft';
+                }
 
                 // 表示を更新
                 scriptTextarea.value = data.script.script_content;
@@ -878,7 +1002,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showToast('台本が正常に生成されました！', 'success');
 
                 // ステータス表示
-                updateScriptStatus(data.script.status);
+                updateScriptStatus(scripts[index].status);
 
                 // チャプターリストの表示を更新
                 renderChapterList();
@@ -1171,6 +1295,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     scripts[currentChapterIndex]._original_content = scripts[currentChapterIndex].script_content;
                     // 改善された台本を保存
                     scripts[currentChapterIndex].improved_script = data.improved_script;
+                    
+                    // レスポンスに動画時間情報があれば、それも保持する
+                    if (data.duration_minutes !== undefined) {
+                        console.log(`サーバーからの動画時間情報を反映: ${data.duration_minutes}分`);
+                        scripts[currentChapterIndex].duration_minutes = parseInt(data.duration_minutes) || durationMinutes;
+                    }
 
                     // 成功メッセージの表示
                     showToast('フィードバックを受け付けました。改善された台本を表示します。', 'success');
@@ -1179,8 +1309,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     applyImprovementButton.classList.remove('hidden');
                     applyImprovementButton.classList.add('highlight');
 
+                    // 動画時間を確保してから台本を更新（フィードバックリストも更新される）
+                    // 現在の入力値を取得して保持
+                    const currentDuration = parseInt(document.getElementById('duration-input').value) || 3;
+                    console.log(`修正依頼後の台本を表示前に、現在の動画時間を確保: ${currentDuration}分`);
+                    
+                    // スクリプトデータに確実に動画時間を設定
+                    scripts[currentChapterIndex].duration_minutes = currentDuration;
+                    
                     // 台本を更新（フィードバックリストも更新される）
                     displayScript(scripts[currentChapterIndex]);
+                    
+                    // 表示後に値が正しいか確認
+                    console.log(`修正依頼後の台本表示後の入力値: ${document.getElementById('duration-input').value}分`);
                 } else {
                     showToast('フィードバックを受け付けましたが、台本の改善に失敗しました。', 'error');
                     // 失敗の場合は元の状態に戻す
@@ -1246,6 +1387,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const durationInput = document.getElementById('duration-input');
         const durationMinutes = parseInt(durationInput.value) || 3;
         
+        // 現在のスクリプトの状態を確認（デバッグ用）
+        console.log('改善適用前の現在のスクリプト:', scripts[currentChapterIndex]);
+        console.log(`改善適用前の動画時間: ${durationMinutes}分, 入力値: ${durationInput.value}`);
+        
+        // 現在のスクリプトデータに動画時間を設定（リクエスト前の保険）
+        if (scripts[currentChapterIndex]) {
+            scripts[currentChapterIndex].duration_minutes = durationMinutes;
+            console.log(`リクエスト前にスクリプトデータの動画時間を設定: ${durationMinutes}分`);
+        }
+        
         fetch('/api/bedrock-scripts/apply-improvement', {
             method: 'POST',
             headers: {
@@ -1276,9 +1427,34 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.log("警告:", data.warning);
                 }
                 
-                // UI更新
-                displayScript(data.script);
+                // duration_minutes値の詳細なログ出力と検証（デバッグ用）
+                console.log(`改善適用後のスクリプトデータ:`, JSON.stringify(data.script));
+                console.log(`改善適用後の動画時間: ${data.script.duration_minutes}分, 型: ${typeof data.script.duration_minutes}`);
+                console.log(`リクエスト時に送信した動画時間: ${durationMinutes}分`);
+                
+                // 動画時間を必ず上書きする（通信過程で値が失われる可能性に備えて）
+                // 文字列から数値への明示的な変換を行う
+                data.script.duration_minutes = durationMinutes; // リクエスト時の値を優先的に使用
+                console.log(`動画時間を強制的に設定: ${data.script.duration_minutes}分, 設定後の型: ${typeof data.script.duration_minutes}`);
+                
+                // グローバルscriptsオブジェクトも更新する
+                console.log(`グローバルscriptsオブジェクト更新前: ${scripts[currentChapterIndex].duration_minutes}分`);
+                scripts[currentChapterIndex].duration_minutes = durationMinutes;
+                console.log(`グローバルscriptsオブジェクト更新後: ${scripts[currentChapterIndex].duration_minutes}分`);
+                
+                // 現在のUI表示の動画時間と入力値を記録
+                console.log(`表示更新前の入力値: ${document.getElementById('duration-input').value}分`);
+                
+                // duration_minutesを強制的に設定した新しいオブジェクトを作成
+                const updatedScript = {...data.script, duration_minutes: durationMinutes};
+                console.log(`新しいスクリプトオブジェクトの動画時間: ${updatedScript.duration_minutes}分`);
+                
+                // UI更新（新しいスクリプトオブジェクトを使用）
+                displayScript(updatedScript);
                 renderChapterList();
+                
+                // 表示更新後の入力値を記録
+                console.log(`表示更新後の入力値: ${document.getElementById('duration-input').value}分`);
                 
                 // ハイライトを解除
                 applyImprovementButton.classList.remove('highlight');
